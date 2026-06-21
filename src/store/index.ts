@@ -34,6 +34,11 @@ export interface ExportHistoryItem {
   status: 'success' | 'processing' | 'failed'
   size?: string
   fileSize?: number
+  reportCategory?: string
+  dateRange?: string
+  stores?: string[]
+  projectType?: string
+  generatedConfig?: any
 }
 
 interface RecordUpdate {
@@ -76,18 +81,77 @@ interface AppState {
   
   doctors: DoctorAccount[]
   initializeDoctors: () => void
+  ensureBuiltinDoctors: () => void
   addDoctor: (doctor: Omit<DoctorAccount, 'id' | 'createdAt'>) => void
   updateDoctor: (doctorId: string, updates: Partial<DoctorAccount>) => void
   toggleDoctorStatus: (doctorId: string) => void
+  batchUpdateDoctors: (doctorIds: string[], updates: Partial<DoctorAccount>) => void
+  batchSetDoctorsStatus: (doctorIds: string[], status: 'on_duty' | 'off_duty' | 'leave') => void
+  batchChangeDoctorsStore: (doctorIds: string[], storeId: string, storeName: string) => void
   
   exportHistory: ExportHistoryItem[]
   addExportHistory: (item: Omit<ExportHistoryItem, 'id' | 'time'>) => string
   updateExportHistory: (id: string, updates: Partial<ExportHistoryItem>) => void
+  deleteExportHistory: (id: string) => void
   
   toggleCollapsed: () => void
   setUser: (user: AppUser | null) => void
   setSelectedStore: (store: { id: string; name: string } | null) => void
   setBreadcrumb: (items: { label: string; path?: string }[]) => void
+}
+
+function getDefaultUsername(id: string): string {
+  const last4 = id.slice(-4)
+  return `dr_${last4}`
+}
+
+function convertMockDoctorToAccount(d: Doctor): DoctorAccount {
+  return {
+    ...d,
+    username: getDefaultUsername(d.id),
+    password: '123456',
+    role: d.title,
+    permissions: rolePermissions[d.title] || [],
+  }
+}
+
+function mergeDoctors(existing: DoctorAccount[]): DoctorAccount[] {
+  const existingMap = new Map(existing.map((d) => [d.id, d]))
+  const mockMap = new Map(mockDoctors.map((d) => [d.id, d]))
+  const result: DoctorAccount[] = []
+  const seenIds = new Set<string>()
+
+  for (const d of existing) {
+    seenIds.add(d.id)
+    if (mockMap.has(d.id)) {
+      const mockDoc = mockMap.get(d.id)!
+      const merged: DoctorAccount = {
+        ...d,
+        username: d.username || getDefaultUsername(d.id),
+        password: d.password || '123456',
+        role: d.role || mockDoc.title,
+        permissions: d.permissions && d.permissions.length > 0 ? d.permissions : rolePermissions[mockDoc.title] || [],
+      }
+      result.push(merged)
+    } else {
+      const userCreated: DoctorAccount = {
+        ...d,
+        username: d.username || getDefaultUsername(d.id),
+        password: d.password || '123456',
+        role: d.role || d.title,
+        permissions: d.permissions && d.permissions.length > 0 ? d.permissions : rolePermissions[d.title] || [],
+      }
+      result.push(userCreated)
+    }
+  }
+
+  for (const mockDoc of mockDoctors) {
+    if (!seenIds.has(mockDoc.id)) {
+      result.push(convertMockDoctorToAccount(mockDoc))
+    }
+  }
+
+  return result
 }
 
 export const useAppStore = create<AppState>()(
@@ -164,14 +228,22 @@ export const useAppStore = create<AppState>()(
       doctors: [],
       initializeDoctors: () => set((state) => {
         if (state.doctors.length > 0) return state
-        const initializedDoctors: DoctorAccount[] = mockDoctors.map((d) => ({
-          ...d,
-          username: '',
-          password: '',
-          role: d.title,
-          permissions: rolePermissions[d.title] || [],
-        }))
+        const initializedDoctors: DoctorAccount[] = mockDoctors.map((d) => convertMockDoctorToAccount(d))
         return { doctors: initializedDoctors }
+      }),
+      ensureBuiltinDoctors: () => set((state) => {
+        const merged = mergeDoctors(state.doctors)
+        const changed = merged.length !== state.doctors.length ||
+          state.doctors.some((d, i) => {
+            const m = merged[i]
+            return !m ||
+              d.username !== m.username ||
+              d.password !== m.password ||
+              d.role !== m.role ||
+              d.permissions.length !== m.permissions.length
+          })
+        if (!changed) return state
+        return { doctors: merged }
       }),
       addDoctor: (doctor) => set((state) => ({
         doctors: [
@@ -193,6 +265,21 @@ export const useAppStore = create<AppState>()(
           d.id === doctorId
             ? { ...d, status: d.status === 'on_duty' ? 'off_duty' : 'on_duty' }
             : d
+        ),
+      })),
+      batchUpdateDoctors: (doctorIds, updates) => set((state) => ({
+        doctors: state.doctors.map((d) =>
+          doctorIds.includes(d.id) ? { ...d, ...updates } : d
+        ),
+      })),
+      batchSetDoctorsStatus: (doctorIds, status) => set((state) => ({
+        doctors: state.doctors.map((d) =>
+          doctorIds.includes(d.id) ? { ...d, status } : d
+        ),
+      })),
+      batchChangeDoctorsStore: (doctorIds, storeId, storeName) => set((state) => ({
+        doctors: state.doctors.map((d) =>
+          doctorIds.includes(d.id) ? { ...d, storeId, storeName } : d
         ),
       })),
       
@@ -219,6 +306,9 @@ export const useAppStore = create<AppState>()(
         exportHistory: state.exportHistory.map((e) =>
           e.id === id ? { ...e, ...updates } : e
         ),
+      })),
+      deleteExportHistory: (id: string) => set((state) => ({
+        exportHistory: state.exportHistory.filter((e) => e.id !== id),
       })),
       
       toggleCollapsed: () => set((state) => ({ collapsed: !state.collapsed })),

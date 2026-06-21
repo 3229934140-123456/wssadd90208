@@ -29,6 +29,8 @@ import {
   ClipboardCheck,
   Settings,
   Check,
+  Building2,
+  UserCog,
 } from 'lucide-react'
 import {
   BarChart,
@@ -54,6 +56,13 @@ const titleMap: Record<string, string> = {
   associate_chief: '副主任医师',
   attending: '主治医师',
   resident: '住院医师',
+}
+
+const roleLabelMap: Record<string, string> = {
+  chief: '主任医师(全部权限)',
+  associate_chief: '副主任医师(除权限管理)',
+  attending: '主治医师(查看权限)',
+  resident: '住院医师(仅录入)',
 }
 
 const statusMap: Record<string, { label: string; variant: 'success' | 'warning' | 'danger' | 'info' | 'default' }> = {
@@ -144,6 +153,13 @@ function getFollowUpRate(doctorId: string): number {
   return Math.round((followed / records.length) * 100)
 }
 
+function getDefaultUsername(id: string): string {
+  const last4 = id.slice(-4)
+  return `dr_${last4}`
+}
+
+type BatchActionType = 'store' | 'status' | 'role' | null
+
 export default function Quality() {
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorAccount | null>(null)
@@ -158,11 +174,37 @@ export default function Quality() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [toggleDoctorId, setToggleDoctorId] = useState<string | null>(null)
 
-  const { doctors: allDoctors, initializeDoctors, addDoctor, updateDoctor } = useAppStore()
+  const [selectedDoctorIds, setSelectedDoctorIds] = useState<string[]>([])
+  const [showBatchConfirm, setShowBatchConfirm] = useState(false)
+  const [batchActionType, setBatchActionType] = useState<BatchActionType>(null)
+  const [batchStoreId, setBatchStoreId] = useState('')
+  const [batchStatus, setBatchStatus] = useState<'on_duty' | 'off_duty' | 'leave'>('on_duty')
+  const [batchRole, setBatchRole] = useState('attending')
+
+  const {
+    doctors: allDoctors,
+    initializeDoctors,
+    ensureBuiltinDoctors,
+    addDoctor,
+    updateDoctor,
+    batchChangeDoctorsStore,
+    batchSetDoctorsStatus,
+    batchUpdateDoctors,
+  } = useAppStore()
 
   useEffect(() => {
     initializeDoctors()
-  }, [initializeDoctors])
+    ensureBuiltinDoctors()
+  }, [initializeDoctors, ensureBuiltinDoctors])
+
+  useEffect(() => {
+    if (selectedDoctor) {
+      const latest = allDoctors.find((d) => d.id === selectedDoctor.id)
+      if (latest && latest !== selectedDoctor) {
+        setSelectedDoctor(latest)
+      }
+    }
+  }, [allDoctors, selectedDoctor])
 
   const filteredDoctors = useMemo(() => {
     return allDoctors.filter((d) => {
@@ -220,6 +262,40 @@ export default function Quality() {
 
     return { avgScore, excellentRate, passRate, pendingCount, scoreDistribution, storeRankings, allRiskPoints, followUpStats }
   }, [allDoctors])
+
+  const allOnDuty = selectedDoctorIds.length > 0 && selectedDoctorIds.every((id) => {
+    const d = allDoctors.find((doc) => doc.id === id)
+    return d && d.status === 'on_duty'
+  })
+
+  const handleBatchAction = () => {
+    if (selectedDoctorIds.length === 0) return
+
+    if (batchActionType === 'store' && batchStoreId) {
+      const store = stores.find((s) => s.id === batchStoreId)
+      if (store) {
+        batchChangeDoctorsStore(selectedDoctorIds, batchStoreId, store.shortName)
+      }
+    } else if (batchActionType === 'status') {
+      batchSetDoctorsStatus(selectedDoctorIds, batchStatus)
+    } else if (batchActionType === 'role') {
+      const perms = rolePermissions[batchRole] || []
+      batchUpdateDoctors(selectedDoctorIds, { role: batchRole, permissions: perms })
+    }
+
+    setSelectedDoctorIds([])
+    setShowBatchConfirm(false)
+    setBatchActionType(null)
+    setBatchStoreId('')
+  }
+
+  const openBatchConfirm = (type: BatchActionType) => {
+    setBatchActionType(type)
+    if (type === 'status') {
+      setBatchStatus(allOnDuty ? 'off_duty' : 'on_duty')
+    }
+    setShowBatchConfirm(true)
+  }
 
   return (
     <div className="space-y-6">
@@ -279,6 +355,13 @@ export default function Quality() {
                 setToggleDoctorId(doctorId)
                 setShowConfirmModal(true)
               }}
+              selectedIds={selectedDoctorIds}
+              setSelectedIds={setSelectedDoctorIds}
+              onBatchStore={() => openBatchConfirm('store')}
+              onBatchStatus={() => openBatchConfirm('status')}
+              onBatchRole={() => openBatchConfirm('role')}
+              onClearSelection={() => setSelectedDoctorIds([])}
+              allOnDuty={allOnDuty}
             />
           )}
         </>
@@ -302,9 +385,22 @@ export default function Quality() {
         }}
         onSave={(data) => {
           if (editingDoctor) {
-            updateDoctor(editingDoctor.id, data)
+            const updateData: Partial<DoctorAccount> = { ...data }
+            if (!data.username) {
+              updateData.username = getDefaultUsername(editingDoctor.id)
+            }
+            if (!data.password) {
+              delete (updateData as any).password
+            }
+            updateDoctor(editingDoctor.id, updateData)
           } else {
-            addDoctor(data)
+            const newId = `doc_${Date.now()}`
+            const saveData: Omit<DoctorAccount, 'id' | 'createdAt'> = {
+              ...data,
+              username: data.username || getDefaultUsername(newId),
+              password: data.password || '123456',
+            }
+            addDoctor(saveData)
           }
           setShowDoctorModal(false)
           setEditingDoctor(null)
@@ -365,6 +461,103 @@ export default function Quality() {
               </p>
             </div>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={showBatchConfirm}
+        onClose={() => {
+          setShowBatchConfirm(false)
+          setBatchActionType(null)
+        }}
+        title={
+          batchActionType === 'store' ? '批量调整门店' :
+          batchActionType === 'status' ? (batchStatus === 'on_duty' ? '批量启用医生' : '批量停用医生') :
+          '批量修改角色'
+        }
+        width={480}
+        footer={
+          <>
+            <button
+              onClick={() => {
+                setShowBatchConfirm(false)
+                setBatchActionType(null)
+              }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleBatchAction}
+              className="btn-primary"
+              disabled={batchActionType === 'store' && !batchStoreId}
+            >
+              确认执行
+            </button>
+          </>
+        }
+      >
+        <div className="py-4 space-y-4">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-12 h-12 rounded-full bg-medical-100 flex items-center justify-center">
+              <UserCog className="w-6 h-6 text-medical-500" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-700">
+                已选择 <span className="text-medical-600 font-bold">{selectedDoctorIds.length}</span> 位医生
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {batchActionType === 'store' && '请选择目标门店，所选医生将全部调整至该门店'}
+                {batchActionType === 'status' && (batchStatus === 'on_duty' ? '所选医生将全部设置为在岗状态' : '所选医生将全部设置为休息状态')}
+                {batchActionType === 'role' && '请选择目标角色，所选医生将全部设置为该角色及对应权限'}
+              </p>
+            </div>
+          </div>
+
+          {batchActionType === 'store' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                目标门店 <span className="text-red-500">*</span>
+              </label>
+              <select
+                className="input w-full"
+                value={batchStoreId}
+                onChange={(e) => setBatchStoreId(e.target.value)}
+              >
+                <option value="">请选择门店</option>
+                {stores.filter((s) => s.status === 'active').map((s) => (
+                  <option key={s.id} value={s.id}>{s.shortName}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {batchActionType === 'role' && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                目标角色 <span className="text-red-500">*</span>
+              </label>
+              <select
+                className="input w-full"
+                value={batchRole}
+                onChange={(e) => setBatchRole(e.target.value)}
+              >
+                <option value="chief">{roleLabelMap['chief']}</option>
+                <option value="associate_chief">{roleLabelMap['associate_chief']}</option>
+                <option value="attending">{roleLabelMap['attending']}</option>
+                <option value="resident">{roleLabelMap['resident']}</option>
+              </select>
+            </div>
+          )}
+
+          {batchActionType === 'status' && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+              <p className="text-xs text-amber-700">
+                <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+                提示：当前操作将把所有选中医生统一设置为「{batchStatus === 'on_duty' ? '在岗' : '休息'}」状态
+              </p>
+            </div>
+          )}
         </div>
       </Modal>
     </div>
@@ -512,6 +705,13 @@ interface DoctorsTabProps {
   onNewDoctor: () => void
   onEditDoctor: (d: DoctorAccount) => void
   onToggleStatus: (doctorId: string) => void
+  selectedIds: string[]
+  setSelectedIds: (ids: string[]) => void
+  onBatchStore: () => void
+  onBatchStatus: () => void
+  onBatchRole: () => void
+  onClearSelection: () => void
+  allOnDuty: boolean
 }
 
 function DoctorsTab({
@@ -526,6 +726,13 @@ function DoctorsTab({
   onNewDoctor,
   onEditDoctor,
   onToggleStatus,
+  selectedIds,
+  setSelectedIds,
+  onBatchStore,
+  onBatchStatus,
+  onBatchRole,
+  onClearSelection,
+  allOnDuty,
 }: DoctorsTabProps) {
   const [searchText, setSearchText] = useState('')
 
@@ -535,7 +742,51 @@ function DoctorsTab({
     return doctors.filter((d) => d.name.toLowerCase().includes(kw))
   }, [doctors, searchText])
 
+  const allChecked = filteredDoctors.length > 0 && filteredDoctors.every((d) => selectedIds.includes(d.id))
+  const indeterminate = selectedIds.length > 0 && !allChecked
+
+  const toggleAll = () => {
+    if (allChecked) {
+      setSelectedIds([])
+    } else {
+      setSelectedIds(filteredDoctors.map((d) => d.id))
+    }
+  }
+
+  const toggleOne = (id: string) => {
+    if (selectedIds.includes(id)) {
+      setSelectedIds(selectedIds.filter((i) => i !== id))
+    } else {
+      setSelectedIds([...selectedIds, id])
+    }
+  }
+
   const columns = [
+    {
+      key: 'select',
+      title: (
+        <div className="flex items-center justify-center">
+          <input
+            type="checkbox"
+            checked={allChecked}
+            ref={(el) => { if (el) el.indeterminate = indeterminate }}
+            onChange={toggleAll}
+            className="w-4 h-4 text-medical-600 rounded cursor-pointer"
+          />
+        </div>
+      ),
+      dataIndex: 'id' as const,
+      width: 50,
+      align: 'center' as const,
+      render: (_: any, record: DoctorAccount) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.includes(record.id)}
+          onChange={() => toggleOne(record.id)}
+          className="w-4 h-4 text-medical-600 rounded cursor-pointer"
+        />
+      ),
+    },
     {
       key: 'name',
       title: '医生',
@@ -663,6 +914,63 @@ function DoctorsTab({
 
   return (
     <div className="space-y-4">
+      {selectedIds.length > 0 && (
+        <div className="card p-3 bg-medical-50/50 border-medical-200">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-medical-100 rounded-lg">
+              <Check className="w-4 h-4 text-medical-600" />
+              <span className="text-sm font-medium text-medical-700">
+                已勾选 <span className="font-bold">{selectedIds.length}</span> 人
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onBatchStore}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border border-medical-200 text-medical-700 hover:bg-medical-100 rounded-lg transition-colors"
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                批量调整门店
+              </button>
+              <button
+                onClick={onBatchStatus}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border rounded-lg transition-colors ${
+                  allOnDuty
+                    ? 'border-red-200 text-red-700 hover:bg-red-50'
+                    : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                }`}
+              >
+                {allOnDuty ? (
+                  <>
+                    <UserX className="w-3.5 h-3.5" />
+                    批量停用
+                  </>
+                ) : (
+                  <>
+                    <UserCheck className="w-3.5 h-3.5" />
+                    批量启用
+                  </>
+                )}
+              </button>
+              <button
+                onClick={onBatchRole}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border border-violet-200 text-violet-700 hover:bg-violet-50 rounded-lg transition-colors"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                批量改角色
+              </button>
+            </div>
+            <div className="flex-1" />
+            <button
+              onClick={onClearSelection}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+              取消勾选
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="card p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -786,6 +1094,7 @@ function DoctorDetail({ doctor, onBack, onViewRecord }: DoctorDetailProps) {
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-bold text-slate-800">{doctor.name}</h2>
                 <Tag color="blue">{titleMap[doctor.title]}</Tag>
+                <Badge variant="info">{roleLabelMap[doctor.role]?.split('(')[0] || titleMap[doctor.role]}</Badge>
                 <Badge variant={statusMap[doctor.status].variant}>{statusMap[doctor.status].label}</Badge>
               </div>
               {doctor.introduction && (
@@ -828,6 +1137,19 @@ function DoctorDetail({ doctor, onBack, onViewRecord }: DoctorDetailProps) {
                 </div>
               </div>
             )}
+            <div>
+              <p className="text-xs text-slate-400 mb-2">账号权限</p>
+              <div className="flex flex-wrap gap-1.5">
+                {doctor.permissions.map((p) => {
+                  const mod = permissionModules.find((m) => m.key === p)
+                  return (
+                    <span key={p} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-50 text-violet-600 text-xs border border-violet-100">
+                      {mod?.name || p}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-4 md:gap-6">
             <div className="text-center p-4 bg-medical-50 rounded-xl">
@@ -1159,13 +1481,19 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
   }
 
   useEffect(() => {
-    if (formData.title !== formData.role) {
-      setFormData((prev) => ({
-        ...prev,
-        role: prev.title,
-      }))
+    if (!editingDoctor && open) {
+      setFormData((prev) => {
+        if (prev.role !== prev.title) {
+          return {
+            ...prev,
+            role: prev.title,
+            permissions: rolePermissions[prev.title] || [],
+          }
+        }
+        return prev
+      })
     }
-  }, [formData.title])
+  }, [formData.title, editingDoctor, open])
 
   useEffect(() => {
     const defaultPerms = rolePermissions[formData.role] || []
@@ -1210,8 +1538,6 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
     if (!formData.licenseNo.trim()) newErrors.licenseNo = '请输入执业证号'
     if (!formData.storeId) newErrors.storeId = '请选择所属门店'
     if (formData.specialty.length === 0) newErrors.specialty = '请至少选择一个专长领域'
-    if (!formData.username.trim()) newErrors.username = '请输入账号用户名'
-    if (!editingDoctor && !formData.password.trim()) newErrors.password = '请输入密码'
     if (formData.yearsOfExperience < 0) newErrors.yearsOfExperience = '从业年限不能为负数'
 
     setErrors(newErrors)
@@ -1245,9 +1571,6 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
 
     if (editingDoctor) {
       saveData.joinDate = editingDoctor.joinDate
-      if (!formData.password.trim()) {
-        saveData.password = editingDoctor.password
-      }
     }
 
     onSave(saveData)
@@ -1444,28 +1767,32 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                账号用户名 <span className="text-red-500">*</span>
+                账号用户名
               </label>
               <input
                 type="text"
                 className={`input w-full ${errors.username ? 'border-red-300 focus:border-red-500' : ''}`}
                 value={formData.username}
                 onChange={(e) => handleChange('username', e.target.value)}
-                placeholder="请输入账号用户名"
+                placeholder="未设置则使用默认账号"
               />
+              <p className="text-xs text-slate-400 mt-1">留空将自动生成 dr_xxxx 格式默认账号</p>
               {errors.username && <p className="text-xs text-red-500 mt-1">{errors.username}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                密码 {!editingDoctor && <span className="text-red-500">*</span>}
+                密码
               </label>
               <input
                 type="password"
                 className={`input w-full ${errors.password ? 'border-red-300 focus:border-red-500' : ''}`}
                 value={formData.password}
                 onChange={(e) => handleChange('password', e.target.value)}
-                placeholder={editingDoctor ? "不修改请留空" : "请输入密码"}
+                placeholder={editingDoctor ? "不修改请留空" : "不设置则使用默认密码 123456"}
               />
+              <p className="text-xs text-slate-400 mt-1">
+                {editingDoctor ? "留空则不修改原密码" : "留空将使用默认密码 123456"}
+              </p>
               {errors.password && <p className="text-xs text-red-500 mt-1">{errors.password}</p>}
             </div>
           </div>
@@ -1473,21 +1800,39 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
 
         <div className="border-t border-slate-200 pt-4">
           <h4 className="text-sm font-semibold text-slate-700 mb-3">角色与权限配置</h4>
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              角色 <span className="text-red-500">*</span>
-            </label>
-            <select
-              className="input w-full"
-              value={formData.role}
-              onChange={(e) => handleChange('role', e.target.value)}
-            >
-              <option value="chief">主任医师</option>
-              <option value="associate_chief">副主任医师</option>
-              <option value="attending">主治医师</option>
-              <option value="resident">住院医师</option>
-            </select>
-            <p className="text-xs text-slate-400 mt-1">选择角色后将自动关联默认权限配置</p>
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                职称 <span className="text-red-500">*</span>
+              </label>
+              <select
+                className="input w-full"
+                value={formData.title}
+                onChange={(e) => handleChange('title', e.target.value as any)}
+              >
+                <option value="chief">主任医师</option>
+                <option value="associate_chief">副主任医师</option>
+                <option value="attending">主治医师</option>
+                <option value="resident">住院医师</option>
+              </select>
+              <p className="text-xs text-slate-400 mt-1">专业技术职称评定</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                系统角色 <span className="text-red-500">*</span>
+              </label>
+              <select
+                className="input w-full"
+                value={formData.role}
+                onChange={(e) => handleChange('role', e.target.value)}
+              >
+                <option value="chief">{roleLabelMap['chief']}</option>
+                <option value="associate_chief">{roleLabelMap['associate_chief']}</option>
+                <option value="attending">{roleLabelMap['attending']}</option>
+                <option value="resident">{roleLabelMap['resident']}</option>
+              </select>
+              <p className="text-xs text-slate-400 mt-1">选择角色后将自动关联默认权限配置</p>
+            </div>
           </div>
 
           <div>

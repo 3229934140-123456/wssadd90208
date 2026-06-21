@@ -23,6 +23,9 @@ import {
   Check,
   Filter,
   Star,
+  RefreshCw,
+  Trash2,
+  Expand,
 } from 'lucide-react'
 import {
   LineChart,
@@ -88,8 +91,12 @@ export default function Reports() {
   const [selectedStores, setSelectedStores] = useState<string[]>([])
   const [selectedProjectType, setSelectedProjectType] = useState('')
   const [showStoreDropdown, setShowStoreDropdown] = useState(false)
+  const [showHistoryModal, setShowHistoryModal] = useState(false)
+  const [historyFilterCategory, setHistoryFilterCategory] = useState<string>('all')
+  const [historyFilterTime, setHistoryFilterTime] = useState<string>('all')
+  const [historySearch, setHistorySearch] = useState('')
   
-  const { exportHistory, addExportHistory, updateExportHistory } = useAppStore()
+  const { exportHistory, addExportHistory, updateExportHistory, deleteExportHistory } = useAppStore()
   const mainReport = reports[0]
 
   const toggleStore = (storeId: string) => {
@@ -324,15 +331,21 @@ export default function Reports() {
     const categoryName = categoryList.find((c) => c.id === activeCategory)?.name || '报表'
     const reportName = `${dateRange}${categoryName}`
     
+    const reportData = getReportData(activeCategory)
+
     const historyId = addExportHistory({
       name: reportName,
       type,
       category: categoryName,
       status: 'processing',
+      reportCategory: activeCategory,
+      dateRange: dateRange,
+      stores: [...selectedStores],
+      projectType: selectedProjectType,
+      generatedConfig: { ...reportData },
     })
 
     try {
-      const reportData = getReportData(activeCategory)
       const result = await exportReport({
         type,
         name: reportName,
@@ -352,9 +365,89 @@ export default function Reports() {
         status: 'failed',
       })
     }
-  }, [activeCategory, dateRange, addExportHistory, updateExportHistory, getReportData])
+  }, [activeCategory, dateRange, selectedStores, selectedProjectType, addExportHistory, updateExportHistory, getReportData])
+
+  const handleRedownload = useCallback(async (item: any) => {
+    const categoryName = categoryList.find((c) => c.id === (item.reportCategory || activeCategory))?.name || item.category || '报表'
+
+    let reportDataToUse = item.generatedConfig
+    if (!reportDataToUse && item.reportCategory) {
+      reportDataToUse = getReportData(item.reportCategory as ReportCategory)
+    } else if (!reportDataToUse) {
+      reportDataToUse = getReportData(activeCategory)
+    }
+
+    try {
+      const result = await exportReport({
+        type: item.type,
+        name: item.name,
+        category: categoryName,
+        data: reportDataToUse,
+      })
+
+      downloadFile(result.blob, result.fileName)
+    } catch (error) {
+      console.error('重新下载失败:', error)
+    }
+  }, [activeCategory, getReportData])
+
+  const handleDeleteHistory = useCallback((id: string) => {
+    if (window.confirm('确定要删除这条导出历史吗？')) {
+      deleteExportHistory(id)
+    }
+  }, [deleteExportHistory])
+
+  const isWithinDays = useCallback((timeStr: string, days: number): boolean => {
+    try {
+      const itemDate = new Date(timeStr.replace(/\//g, '-'))
+      const now = new Date()
+      const diffMs = now.getTime() - itemDate.getTime()
+      const diffDays = diffMs / (1000 * 60 * 60 * 24)
+      return diffDays <= days
+    } catch {
+      return true
+    }
+  }, [])
+
+  const filteredExportHistory = useMemo(() => {
+    return exportHistory.filter((item) => {
+      if (historyFilterCategory !== 'all') {
+        const catMatch = categoryList.find((c) => c.id === historyFilterCategory)?.name
+        if (item.category !== catMatch && item.reportCategory !== historyFilterCategory) {
+          return false
+        }
+      }
+
+      if (historyFilterTime !== 'all') {
+        const daysMap: Record<string, number> = { '7days': 7, '30days': 30 }
+        const days = daysMap[historyFilterTime]
+        if (days && !isWithinDays(item.time, days)) {
+          return false
+        }
+      }
+
+      if (historySearch.trim()) {
+        const search = historySearch.trim().toLowerCase()
+        if (!item.name.toLowerCase().includes(search)) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [exportHistory, historyFilterCategory, historyFilterTime, historySearch, isWithinDays])
+
+  const recentExportHistory = useMemo(() => exportHistory.slice(0, 5), [exportHistory])
+
+  const getStoreNames = (storeIds: string[]): string => {
+    if (!storeIds || storeIds.length === 0) return '全部门店'
+    const names = storeIds.map((id) => stores.find((s) => s.id === id)?.shortName || id)
+    if (names.length <= 2) return names.join('、')
+    return `${names.slice(0, 2).join('、')}等${names.length}家`
+  }
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold text-slate-800">报表中心</h1>
@@ -395,13 +488,26 @@ export default function Reports() {
           </div>
 
           <div className="card p-4 mt-4">
-            <div className="flex items-center gap-2 mb-3">
-              <History className="w-4 h-4 text-slate-400" />
-              <span className="text-sm font-medium text-slate-700">导出历史</span>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <History className="w-4 h-4 text-slate-400" />
+                <span className="text-sm font-medium text-slate-700">最近导出</span>
+              </div>
+              <button
+                onClick={() => setShowHistoryModal(true)}
+                className="flex items-center gap-1 text-xs text-medical-600 hover:text-medical-700 transition-colors"
+              >
+                <Expand className="w-3 h-3" />
+                全部
+              </button>
             </div>
             <div className="space-y-2 max-h-72 overflow-y-auto">
-              {exportHistory.map((e) => (
-                <div key={e.id} className="p-2.5 rounded-lg bg-slate-50">
+              {recentExportHistory.map((e) => (
+                <div
+                  key={e.id}
+                  onClick={() => e.status === 'success' && handleRedownload(e)}
+                  className={`p-2.5 rounded-lg bg-slate-50 ${e.status === 'success' ? 'cursor-pointer hover:bg-slate-100' : ''}`}
+                >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 min-w-0">
                       {e.type === 'excel' ? (
@@ -428,6 +534,9 @@ export default function Reports() {
                   </div>
                 </div>
               ))}
+              {recentExportHistory.length === 0 && (
+                <div className="py-8 text-center text-xs text-slate-400">暂无导出记录</div>
+              )}
             </div>
           </div>
         </div>
@@ -538,6 +647,232 @@ export default function Reports() {
         </div>
       </div>
     </div>
+
+    {showHistoryModal && (
+      <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[85vh] flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-medical-50 to-white">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-medical-100 flex items-center justify-center">
+                <History className="w-5 h-5 text-medical-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">导出历史</h2>
+                <p className="text-xs text-slate-500">共 {filteredExportHistory.length} 条记录</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowHistoryModal(false)}
+              className="w-9 h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors"
+            >
+              <X className="w-5 h-5 text-slate-500" />
+            </button>
+          </div>
+
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-slate-400" />
+                <span className="text-sm text-slate-600">筛选：</span>
+              </div>
+
+              <select
+                value={historyFilterCategory}
+                onChange={(e) => setHistoryFilterCategory(e.target.value)}
+                className="input py-1.5 text-xs w-32"
+              >
+                <option value="all">全部类型</option>
+                <option value="business">经营报表</option>
+                <option value="quality">质控报表</option>
+                <option value="drug">药品报表</option>
+                <option value="performance">绩效报表</option>
+                <option value="customer">客户报表</option>
+              </select>
+
+              <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg">
+                {[
+                  { label: '近7天', value: '7days' },
+                  { label: '近30天', value: '30days' },
+                  { label: '全部', value: 'all' },
+                ].map((r) => (
+                  <button
+                    key={r.value}
+                    onClick={() => setHistoryFilterTime(r.value)}
+                    className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                      historyFilterTime === r.value ? 'bg-white text-medical-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1" />
+
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  placeholder="搜索文件名..."
+                  className="input pl-8 py-1.5 text-xs w-48"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-auto">
+            <table className="w-full">
+              <thead className="bg-slate-50 sticky top-0 z-10">
+                <tr className="border-b border-slate-200">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600">文件名</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-24">报表类别</th>
+                  <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-20">格式</th>
+                  <th className="text-right py-3 px-4 text-xs font-semibold text-slate-600 w-24">文件大小</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-48">生成条件</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-40">生成时间</th>
+                  <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-20">状态</th>
+                  <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-32">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredExportHistory.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3 px-4">
+                      <div
+                        className="flex items-center gap-2 cursor-pointer group"
+                        onClick={() => item.status === 'success' && handleRedownload(item)}
+                      >
+                        {item.type === 'excel' ? (
+                          <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center flex-shrink-0 group-hover:bg-emerald-100 transition-colors">
+                            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                          </div>
+                        ) : (
+                          <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0 group-hover:bg-red-100 transition-colors">
+                            <File className="w-4 h-4 text-red-500" />
+                          </div>
+                        )}
+                        <span className="text-sm font-medium text-slate-700 group-hover:text-medical-600 transition-colors truncate max-w-xs">
+                          {item.name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-slate-100 text-slate-600">
+                        {item.category}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-center">
+                      <span className={`text-xs font-semibold ${
+                        item.type === 'excel' ? 'text-emerald-600' : 'text-red-500'
+                      }`}>
+                        {item.type === 'excel' ? 'Excel' : 'PDF'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right text-sm text-slate-600 font-mono">
+                      {item.size || '-'}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="space-y-0.5">
+                        {item.dateRange && (
+                          <div className="flex items-center gap-1 text-xs text-slate-500">
+                            <Calendar className="w-3 h-3" />
+                            <span>{item.dateRange}</span>
+                          </div>
+                        )}
+                        {item.stores && (
+                          <div className="flex items-center gap-1 text-xs text-slate-500">
+                            <MapPin className="w-3 h-3" />
+                            <span className="truncate max-w-32" title={getStoreNames(item.stores)}>
+                              {getStoreNames(item.stores)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-sm text-slate-500">
+                      <div className="flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-slate-400" />
+                        <span>{item.time}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-center">
+                      {item.status === 'success' && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-50 text-emerald-600">
+                          <Check className="w-3 h-3" />
+                          成功
+                        </span>
+                      )}
+                      {item.status === 'processing' && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-medical-50 text-medical-600">
+                          <div className="w-3 h-3 border-2 border-medical-500 border-t-transparent rounded-full animate-spin" />
+                          处理中
+                        </span>
+                      )}
+                      {item.status === 'failed' && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600">
+                          <X className="w-3 h-3" />
+                          失败
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => item.status === 'success' && handleRedownload(item)}
+                          disabled={item.status !== 'success'}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            item.status === 'success'
+                              ? 'hover:bg-medical-50 text-medical-600 hover:text-medical-700'
+                              : 'text-slate-300 cursor-not-allowed'
+                          }`}
+                          title="重新下载"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteHistory(item.id)}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                          title="删除"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {filteredExportHistory.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="py-16 text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center">
+                          <History className="w-8 h-8 text-slate-300" />
+                        </div>
+                        <p className="text-sm text-slate-400">暂无符合条件的导出记录</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50/50">
+            <span className="text-xs text-slate-500">
+              显示 {filteredExportHistory.length} / {exportHistory.length} 条记录
+            </span>
+            <button
+              onClick={() => setShowHistoryModal(false)}
+              className="px-4 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
