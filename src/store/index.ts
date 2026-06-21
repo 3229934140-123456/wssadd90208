@@ -2,12 +2,20 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { CustomerRecord, Doctor, QualityScore, RecordStatus, User } from '../types'
 import type { RuleViolation } from '../utils/auditRules'
+import { doctors as mockDoctors } from '../data/mockData'
 
 export interface AppUser {
   id: string
   name: string
   avatar: string
   role: string
+}
+
+export const rolePermissions: Record<string, string[]> = {
+  chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings', 'permissions'],
+  associate_chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings'],
+  attending: ['dashboard', 'record_view', 'template_view', 'drug_view', 'quality', 'reports'],
+  resident: ['record_entry'],
 }
 
 export interface DoctorAccount extends Doctor {
@@ -67,6 +75,7 @@ interface AppState {
   updateRecord: (recordId: string, updates: RecordUpdate) => void
   
   doctors: DoctorAccount[]
+  initializeDoctors: () => void
   addDoctor: (doctor: Omit<DoctorAccount, 'id' | 'createdAt'>) => void
   updateDoctor: (doctorId: string, updates: Partial<DoctorAccount>) => void
   toggleDoctorStatus: (doctorId: string) => void
@@ -153,6 +162,17 @@ export const useAppStore = create<AppState>()(
       })),
       
       doctors: [],
+      initializeDoctors: () => set((state) => {
+        if (state.doctors.length > 0) return state
+        const initializedDoctors: DoctorAccount[] = mockDoctors.map((d) => ({
+          ...d,
+          username: '',
+          password: '',
+          role: d.title,
+          permissions: rolePermissions[d.title] || [],
+        }))
+        return { doctors: initializedDoctors }
+      }),
       addDoctor: (doctor) => set((state) => ({
         doctors: [
           ...state.doctors,

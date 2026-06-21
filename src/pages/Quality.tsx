@@ -43,9 +43,9 @@ import {
   Legend,
 } from 'recharts'
 import { StatCard, Badge, Tag, DataTable, Modal } from '../components/ui'
-import { doctors as mockDoctors, customerRecords, stores, qualityScores, injectionPoints } from '../data/mockData'
+import { customerRecords, stores, qualityScores, injectionPoints } from '../data/mockData'
 import type { Doctor, CustomerRecord, QualityScore, Gender } from '../types'
-import { useAppStore, type DoctorAccount } from '../store'
+import { useAppStore, type DoctorAccount, rolePermissions } from '../store'
 
 type TabType = 'overview' | 'doctors'
 
@@ -77,12 +77,7 @@ const permissionModules = [
   { key: 'permissions', name: '权限管理', icon: Shield },
 ]
 
-const rolePermissions: Record<string, string[]> = {
-  chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings', 'permissions'],
-  associate_chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings'],
-  attending: ['record_view', 'template_view', 'drug_view'],
-  resident: ['record_entry'],
-}
+
 
 interface DoctorFormData {
   name: string
@@ -151,7 +146,7 @@ function getFollowUpRate(doctorId: string): number {
 
 export default function Quality() {
   const [activeTab, setActiveTab] = useState<TabType>('overview')
-  const [selectedDoctor, setSelectedDoctor] = useState<Doctor | null>(null)
+  const [selectedDoctor, setSelectedDoctor] = useState<DoctorAccount | null>(null)
   const [selectedRecord, setSelectedRecord] = useState<CustomerRecord | null>(null)
 
   const [filterStore, setFilterStore] = useState('')
@@ -163,17 +158,11 @@ export default function Quality() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [toggleDoctorId, setToggleDoctorId] = useState<string | null>(null)
 
-  const { doctors: storeDoctors, addDoctor, updateDoctor, toggleDoctorStatus } = useAppStore()
+  const { doctors: allDoctors, initializeDoctors, addDoctor, updateDoctor } = useAppStore()
 
-  const allDoctors = useMemo(() => {
-    const merged: (Doctor | DoctorAccount)[] = [...storeDoctors]
-    mockDoctors.forEach((md) => {
-      if (!merged.find((d) => d.id === md.id)) {
-        merged.push(md)
-      }
-    })
-    return merged
-  }, [storeDoctors])
+  useEffect(() => {
+    initializeDoctors()
+  }, [initializeDoctors])
 
   const filteredDoctors = useMemo(() => {
     return allDoctors.filter((d) => {
@@ -230,7 +219,7 @@ export default function Quality() {
     })
 
     return { avgScore, excellentRate, passRate, pendingCount, scoreDistribution, storeRankings, allRiskPoints, followUpStats }
-  }, [allDoctors, getDoctorRecords])
+  }, [allDoctors])
 
   return (
     <div className="space-y-6">
@@ -283,17 +272,7 @@ export default function Quality() {
                 setShowDoctorModal(true)
               }}
               onEditDoctor={(doctor) => {
-                if ('username' in doctor) {
-                  setEditingDoctor(doctor as DoctorAccount)
-                } else {
-                  setEditingDoctor({
-                    ...doctor,
-                    username: '',
-                    password: '',
-                    role: doctor.title,
-                    permissions: rolePermissions[doctor.title] || [],
-                  } as DoctorAccount)
-                }
+                setEditingDoctor(doctor)
                 setShowDoctorModal(true)
               }}
               onToggleStatus={(doctorId) => {
@@ -354,7 +333,9 @@ export default function Quality() {
             <button
               onClick={() => {
                 if (toggleDoctorId) {
-                  toggleDoctorStatus(toggleDoctorId)
+                  const currentDoctor = allDoctors.find((d) => d.id === toggleDoctorId)
+                  const newStatus = currentDoctor?.status === 'on_duty' ? 'off_duty' : 'on_duty'
+                  updateDoctor(toggleDoctorId, { status: newStatus })
                 }
                 setShowConfirmModal(false)
                 setToggleDoctorId(null)
@@ -520,16 +501,16 @@ function OverviewTab({ data }: { data: ReturnType<typeof useMemo<any>> }) {
 }
 
 interface DoctorsTabProps {
-  doctors: (Doctor | DoctorAccount)[]
+  doctors: DoctorAccount[]
   filterStore: string
   setFilterStore: (v: string) => void
   filterTitle: string
   setFilterTitle: (v: string) => void
   filterStatus: string
   setFilterStatus: (v: string) => void
-  onViewDetail: (d: Doctor) => void
+  onViewDetail: (d: DoctorAccount) => void
   onNewDoctor: () => void
-  onEditDoctor: (d: Doctor | DoctorAccount) => void
+  onEditDoctor: (d: DoctorAccount) => void
   onToggleStatus: (doctorId: string) => void
 }
 
@@ -560,7 +541,7 @@ function DoctorsTab({
       title: '医生',
       dataIndex: 'name' as const,
       width: 200,
-      render: (_: any, record: Doctor | DoctorAccount) => (
+      render: (_: any, record: DoctorAccount) => (
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-medical-500 to-primary-500 flex items-center justify-center text-white font-semibold text-sm">
             {record.name.charAt(0)}
@@ -639,7 +620,7 @@ function DoctorsTab({
       dataIndex: 'id' as const,
       align: 'center' as const,
       width: 240,
-      render: (_: any, record: Doctor | DoctorAccount) => (
+      render: (_: any, record: DoctorAccount) => (
         <div className="flex items-center justify-center gap-1">
           <button
             onClick={() => onViewDetail(record)}
@@ -750,7 +731,7 @@ function DoctorsTab({
 }
 
 interface DoctorDetailProps {
-  doctor: Doctor
+  doctor: DoctorAccount
   onBack: () => void
   onViewRecord: (r: CustomerRecord) => void
 }
@@ -1175,17 +1156,24 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
         return next
       })
     }
+  }
 
-    if (key === 'title' && typeof value === 'string') {
-      const defaultPerms = rolePermissions[value] || []
+  useEffect(() => {
+    if (formData.title !== formData.role) {
       setFormData((prev) => ({
         ...prev,
-        title: value as DoctorFormData['title'],
-        role: value,
-        permissions: defaultPerms,
+        role: prev.title,
       }))
     }
-  }
+  }, [formData.title])
+
+  useEffect(() => {
+    const defaultPerms = rolePermissions[formData.role] || []
+    setFormData((prev) => ({
+      ...prev,
+      permissions: defaultPerms,
+    }))
+  }, [formData.role])
 
   const toggleSpecialty = (specialty: string) => {
     setFormData((prev) => ({
@@ -1257,6 +1245,9 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
 
     if (editingDoctor) {
       saveData.joinDate = editingDoctor.joinDate
+      if (!formData.password.trim()) {
+        saveData.password = editingDoctor.password
+      }
     }
 
     onSave(saveData)
