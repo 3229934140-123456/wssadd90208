@@ -18,6 +18,7 @@ import {
   FileText,
   Activity,
   ArrowLeft,
+  ArrowRight,
   X,
   Plus,
   Edit2,
@@ -31,6 +32,7 @@ import {
   Check,
   Building2,
   UserCog,
+  History,
 } from 'lucide-react'
 import {
   BarChart,
@@ -1049,6 +1051,30 @@ function DoctorDetail({ doctor, onBack, onViewRecord }: DoctorDetailProps) {
   const qScores = getDoctorQualityScores(doctor.id)
   const avgScore = getAvgScore(doctor.id)
   const followUpRate = getFollowUpRate(doctor.id)
+  const getDoctorPermissionLogs = useAppStore((state) => state.getDoctorPermissionLogs)
+  const permissionLogs = getDoctorPermissionLogs(doctor.id)
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null)
+
+  const changeTypeLabelMap: Record<string, { label: string; color: string }> = {
+    role_change: { label: '角色变更', color: 'blue' },
+    manual_permission: { label: '手动调整权限', color: 'pink' },
+    batch_role: { label: '批量改角色', color: 'purple' },
+    batch_store: { label: '批量调门店', color: 'orange' },
+    batch_status: { label: '批量改状态', color: 'gray' },
+  }
+
+  const changeTypeClassMap: Record<string, string> = {
+    blue: 'bg-blue-50 text-blue-600 border-blue-200',
+    pink: 'bg-pink-50 text-pink-600 border-pink-200',
+    purple: 'bg-violet-50 text-violet-600 border-violet-200',
+    orange: 'bg-orange-50 text-orange-600 border-orange-200',
+    gray: 'bg-slate-100 text-slate-600 border-slate-200',
+  }
+
+  const getPermissionName = (key: string) => {
+    const mod = permissionModules.find((m) => m.key === key)
+    return mod?.name || key
+  }
 
   const performanceTrend = Array.from({ length: 6 }, (_, i) => {
     const month = new Date()
@@ -1268,6 +1294,150 @@ function DoctorDetail({ doctor, onBack, onViewRecord }: DoctorDetailProps) {
           )}
         </div>
       </div>
+
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-slate-800">权限变更记录</h3>
+          <span className="text-xs text-slate-400">共 {permissionLogs.length} 条记录</span>
+        </div>
+        {permissionLogs.length === 0 ? (
+          <div className="py-12 text-center text-slate-400 text-sm">暂无变更记录</div>
+        ) : (
+          <div className="relative">
+            <div className="absolute left-4 top-2 bottom-2 w-px bg-slate-200" />
+            <div className="space-y-4">
+              {permissionLogs.map((log) => {
+                const typeInfo = changeTypeLabelMap[log.changeType] || { label: log.changeType, color: 'gray' }
+                const typeClass = changeTypeClassMap[typeInfo.color]
+                const isExpanded = expandedLogId === log.id
+                const hasPermissionDiff = log.before.permissions || log.after.permissions
+
+                const addedPerms = (log.after.permissions || []).filter((p) => !(log.before.permissions || []).includes(p))
+                const removedPerms = (log.before.permissions || []).filter((p) => !(log.after.permissions || []).includes(p))
+
+                return (
+                  <div key={log.id} className="relative pl-10">
+                    <div className={`absolute left-2.5 top-2 w-3 h-3 rounded-full border-2 border-white ${
+                      typeInfo.color === 'blue' ? 'bg-blue-500' :
+                      typeInfo.color === 'pink' ? 'bg-pink-500' :
+                      typeInfo.color === 'purple' ? 'bg-violet-500' :
+                      typeInfo.color === 'orange' ? 'bg-orange-500' : 'bg-slate-400'
+                    }`} />
+                    <div className="bg-slate-50 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${typeClass}`}>
+                            {typeInfo.label}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            操作人：{log.operatorName || '系统'}
+                          </span>
+                        </div>
+                        <span className="text-xs text-slate-400 flex-shrink-0">{log.changeTime}</span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        {log.before.role !== undefined || log.after.role !== undefined ? (
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500 w-16 flex-shrink-0">角色：</span>
+                            <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                              {log.before.role ? titleMap[log.before.role] || log.before.role : '无'}
+                            </span>
+                            <ArrowRight className="w-3 h-3 text-slate-400" />
+                            <span className="text-slate-700 font-medium bg-medical-50 text-medical-700 px-1.5 py-0.5 rounded">
+                              {log.after.role ? titleMap[log.after.role] || log.after.role : '无'}
+                            </span>
+                          </div>
+                        ) : null}
+
+                        {hasPermissionDiff ? (
+                          <div className="text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-500 w-16 flex-shrink-0">权限：</span>
+                              <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                                {(log.before.permissions || []).length}项
+                              </span>
+                              <ArrowRight className="w-3 h-3 text-slate-400" />
+                              <span className="text-slate-700 font-medium bg-medical-50 text-medical-700 px-1.5 py-0.5 rounded">
+                                {(log.after.permissions || []).length}项
+                              </span>
+                              {(addedPerms.length > 0 || removedPerms.length > 0) && (
+                                <button
+                                  onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                                  className="text-medical-600 hover:text-medical-700 text-xs ml-1"
+                                >
+                                  {isExpanded ? '收起' : '查看详情'}
+                                </button>
+                              )}
+                            </div>
+                            {isExpanded && (addedPerms.length > 0 || removedPerms.length > 0) && (
+                              <div className="mt-2 ml-16 space-y-1">
+                                {addedPerms.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    <span className="text-emerald-600 text-xs">新增：</span>
+                                    {addedPerms.map((p) => (
+                                      <span key={p} className="text-xs bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">
+                                        +{getPermissionName(p)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                                {removedPerms.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    <span className="text-red-500 text-xs">删除：</span>
+                                    {removedPerms.map((p) => (
+                                      <span key={p} className="text-xs bg-red-50 text-red-500 px-1.5 py-0.5 rounded line-through">
+                                        -{getPermissionName(p)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : null}
+
+                        {log.before.storeId !== undefined || log.after.storeId !== undefined ? (
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500 w-16 flex-shrink-0">门店：</span>
+                            <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                              {log.before.storeName || '无'}
+                            </span>
+                            <ArrowRight className="w-3 h-3 text-slate-400" />
+                            <span className="text-slate-700 font-medium bg-medical-50 text-medical-700 px-1.5 py-0.5 rounded">
+                              {log.after.storeName || '无'}
+                            </span>
+                          </div>
+                        ) : null}
+
+                        {log.before.status !== undefined || log.after.status !== undefined ? (
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500 w-16 flex-shrink-0">状态：</span>
+                            <span className="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                              {log.before.status ? statusMap[log.before.status]?.label || log.before.status : '无'}
+                            </span>
+                            <ArrowRight className="w-3 h-3 text-slate-400" />
+                            <span className="text-slate-700 font-medium bg-medical-50 text-medical-700 px-1.5 py-0.5 rounded">
+                              {log.after.status ? statusMap[log.after.status]?.label || log.after.status : '无'}
+                            </span>
+                          </div>
+                        ) : null}
+
+                        {log.remark && (
+                          <div className="flex items-start gap-2 text-xs mt-1">
+                            <span className="text-slate-500 w-16 flex-shrink-0">备注：</span>
+                            <span className="text-slate-600">{log.remark}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -1429,9 +1599,13 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
   })
 
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [isRoleChangeByUser, setIsRoleChangeByUser] = useState(false)
 
   useEffect(() => {
     if (editingDoctor && open) {
+      const savedPerms = editingDoctor.permissions && editingDoctor.permissions.length > 0
+        ? editingDoctor.permissions
+        : (rolePermissions[editingDoctor.role] || [])
       setFormData({
         name: editingDoctor.name,
         gender: editingDoctor.gender,
@@ -1445,7 +1619,7 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
         username: editingDoctor.username,
         password: '',
         role: editingDoctor.role,
-        permissions: editingDoctor.permissions,
+        permissions: savedPerms,
         status: editingDoctor.status,
       })
     } else if (open) {
@@ -1467,9 +1641,13 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
       })
     }
     setErrors({})
+    setIsRoleChangeByUser(false)
   }, [editingDoctor, open])
 
   const handleChange = <K extends keyof DoctorFormData>(key: K, value: DoctorFormData[K]) => {
+    if (key === 'role') {
+      setIsRoleChangeByUser(true)
+    }
     setFormData((prev) => ({ ...prev, [key]: value }))
     if (errors[key]) {
       setErrors((prev) => {
@@ -1482,26 +1660,27 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
 
   useEffect(() => {
     if (!editingDoctor && open) {
-      setFormData((prev) => {
-        if (prev.role !== prev.title) {
-          return {
-            ...prev,
-            role: prev.title,
-            permissions: rolePermissions[prev.title] || [],
-          }
-        }
-        return prev
-      })
+      if (formData.role !== formData.title) {
+        setIsRoleChangeByUser(true)
+        setFormData((prev) => ({
+          ...prev,
+          role: prev.title,
+          permissions: rolePermissions[prev.title] || [],
+        }))
+      }
     }
   }, [formData.title, editingDoctor, open])
 
   useEffect(() => {
-    const defaultPerms = rolePermissions[formData.role] || []
-    setFormData((prev) => ({
-      ...prev,
-      permissions: defaultPerms,
-    }))
-  }, [formData.role])
+    if (isRoleChangeByUser) {
+      const defaultPerms = rolePermissions[formData.role] || []
+      setFormData((prev) => ({
+        ...prev,
+        permissions: defaultPerms,
+      }))
+      setIsRoleChangeByUser(false)
+    }
+  }, [formData.role, isRoleChangeByUser])
 
   const toggleSpecialty = (specialty: string) => {
     setFormData((prev) => ({
@@ -1518,6 +1697,22 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
       permissions: prev.permissions.includes(permKey)
         ? prev.permissions.filter((p) => p !== permKey)
         : [...prev.permissions, permKey],
+    }))
+  }
+
+  const defaultPermsForRole = rolePermissions[formData.role] || []
+  const isCustomPermissions = useMemo(() => {
+    const sortedCurrent = [...formData.permissions].sort()
+    const sortedDefault = [...defaultPermsForRole].sort()
+    return sortedCurrent.length !== sortedDefault.length ||
+      sortedCurrent.some((p, i) => p !== sortedDefault[i])
+  }, [formData.permissions, defaultPermsForRole])
+
+  const handleRestoreDefaultPermissions = () => {
+    setIsRoleChangeByUser(true)
+    setFormData((prev) => ({
+      ...prev,
+      permissions: rolePermissions[prev.role] || [],
     }))
   }
 
@@ -1836,7 +2031,27 @@ function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormMod
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">权限配置（多选）</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-slate-700">权限配置（多选）</label>
+            </div>
+            {isCustomPermissions && (
+              <div className="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs text-amber-700 font-medium">
+                      当前权限为自定义配置，与角色默认权限不同
+                    </p>
+                    <button
+                      onClick={handleRestoreDefaultPermissions}
+                      className="mt-1.5 text-xs text-amber-700 hover:text-amber-800 underline underline-offset-1"
+                    >
+                      恢复角色默认权限
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {permissionModules.map((mod) => {
                 const Icon = mod.icon

@@ -23,6 +23,7 @@ export interface DoctorAccount extends Doctor {
   password: string
   role: string
   permissions: string[]
+  createdAt: string
 }
 
 export interface ExportHistoryItem {
@@ -39,6 +40,33 @@ export interface ExportHistoryItem {
   stores?: string[]
   projectType?: string
   generatedConfig?: any
+  realFileName?: string
+  errorMessage?: string
+}
+
+export interface PermissionChangeLog {
+  id: string
+  doctorId: string
+  doctorName: string
+  changeType: 'role_change' | 'manual_permission' | 'batch_role' | 'batch_store' | 'batch_status'
+  operatorId: string
+  operatorName: string
+  changeTime: string
+  before: {
+    role?: string
+    permissions?: string[]
+    storeId?: string
+    storeName?: string
+    status?: string
+  }
+  after: {
+    role?: string
+    permissions?: string[]
+    storeId?: string
+    storeName?: string
+    status?: string
+  }
+  remark?: string
 }
 
 interface RecordUpdate {
@@ -93,6 +121,10 @@ interface AppState {
   addExportHistory: (item: Omit<ExportHistoryItem, 'id' | 'time'>) => string
   updateExportHistory: (id: string, updates: Partial<ExportHistoryItem>) => void
   deleteExportHistory: (id: string) => void
+
+  permissionChangeLogs: PermissionChangeLog[]
+  addPermissionChangeLog: (log: Omit<PermissionChangeLog, 'id' | 'changeTime'>) => void
+  getDoctorPermissionLogs: (doctorId: string) => PermissionChangeLog[]
   
   toggleCollapsed: () => void
   setUser: (user: AppUser | null) => void
@@ -112,6 +144,7 @@ function convertMockDoctorToAccount(d: Doctor): DoctorAccount {
     password: '123456',
     role: d.title,
     permissions: rolePermissions[d.title] || [],
+    createdAt: new Date().toISOString(),
   }
 }
 
@@ -245,43 +278,269 @@ export const useAppStore = create<AppState>()(
         if (!changed) return state
         return { doctors: merged }
       }),
-      addDoctor: (doctor) => set((state) => ({
-        doctors: [
-          ...state.doctors,
+      addDoctor: (doctor) => set((state) => {
+        const newId = `doc_${Date.now()}`
+        const currentUser = state.user
+        const newDoctor: DoctorAccount = {
+          ...doctor,
+          id: newId,
+          createdAt: new Date().toISOString(),
+        }
+        const log: PermissionChangeLog = {
+          id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          doctorId: newId,
+          doctorName: doctor.name,
+          changeType: 'role_change',
+          operatorId: currentUser?.id || '',
+          operatorName: currentUser?.name || '',
+          changeTime: new Date().toLocaleString('zh-CN'),
+          before: {},
+          after: {
+            role: doctor.role,
+            permissions: doctor.permissions,
+            storeId: doctor.storeId,
+            storeName: doctor.storeName,
+            status: doctor.status,
+          },
+          remark: '新建医生账号',
+        }
+        return {
+          doctors: [...state.doctors, newDoctor],
+          permissionChangeLogs: [log, ...state.permissionChangeLogs],
+        }
+      }),
+      updateDoctor: (doctorId, updates) => set((state) => {
+        const currentUser = state.user
+        const existingDoctor = state.doctors.find((d) => d.id === doctorId)
+        if (!existingDoctor) {
+          return {
+            doctors: state.doctors.map((d) =>
+              d.id === doctorId ? { ...d, ...updates } : d
+            ),
+          }
+        }
+
+        const updatedDoctor = { ...existingDoctor, ...updates }
+        const before: PermissionChangeLog['before'] = {}
+        const after: PermissionChangeLog['after'] = {}
+        let hasChange = false
+
+        if (existingDoctor.role !== updatedDoctor.role) {
+          before.role = existingDoctor.role
+          after.role = updatedDoctor.role
+          hasChange = true
+        }
+        if (
+          existingDoctor.permissions?.length !== updatedDoctor.permissions?.length ||
+          existingDoctor.permissions?.some((p) => !updatedDoctor.permissions?.includes(p)) ||
+          updatedDoctor.permissions?.some((p) => !existingDoctor.permissions?.includes(p))
+        ) {
+          before.permissions = [...(existingDoctor.permissions || [])]
+          after.permissions = [...(updatedDoctor.permissions || [])]
+          hasChange = true
+        }
+        if (existingDoctor.storeId !== updatedDoctor.storeId || existingDoctor.storeName !== updatedDoctor.storeName) {
+          before.storeId = existingDoctor.storeId
+          before.storeName = existingDoctor.storeName
+          after.storeId = updatedDoctor.storeId
+          after.storeName = updatedDoctor.storeName
+          hasChange = true
+        }
+        if (existingDoctor.status !== updatedDoctor.status) {
+          before.status = existingDoctor.status
+          after.status = updatedDoctor.status
+          hasChange = true
+        }
+
+        const updatedDoctors = state.doctors.map((d) =>
+          d.id === doctorId ? updatedDoctor : d
+        )
+
+        if (!hasChange) {
+          return { doctors: updatedDoctors }
+        }
+
+        const isRoleChange = before.role !== undefined
+        const isPermissionOnlyChange = before.permissions !== undefined && before.role === undefined
+        let changeType: PermissionChangeLog['changeType'] = 'role_change'
+        if (isRoleChange) {
+          changeType = 'role_change'
+        } else if (isPermissionOnlyChange) {
+          changeType = 'manual_permission'
+        }
+
+        const log: PermissionChangeLog = {
+          id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          doctorId,
+          doctorName: existingDoctor.name,
+          changeType,
+          operatorId: currentUser?.id || '',
+          operatorName: currentUser?.name || '',
+          changeTime: new Date().toLocaleString('zh-CN'),
+          before,
+          after,
+        }
+
+        return {
+          doctors: updatedDoctors,
+          permissionChangeLogs: [log, ...state.permissionChangeLogs],
+        }
+      }),
+      toggleDoctorStatus: (doctorId) => set((state) => {
+        const currentUser = state.user
+        const existingDoctor = state.doctors.find((d) => d.id === doctorId)
+        if (!existingDoctor) return state
+
+        const newStatus = existingDoctor.status === 'on_duty' ? 'off_duty' : 'on_duty'
+        const log: PermissionChangeLog = {
+          id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          doctorId,
+          doctorName: existingDoctor.name,
+          changeType: 'role_change',
+          operatorId: currentUser?.id || '',
+          operatorName: currentUser?.name || '',
+          changeTime: new Date().toLocaleString('zh-CN'),
+          before: { status: existingDoctor.status },
+          after: { status: newStatus },
+        }
+        return {
+          doctors: state.doctors.map((d) =>
+            d.id === doctorId ? { ...d, status: newStatus } : d
+          ),
+          permissionChangeLogs: [log, ...state.permissionChangeLogs],
+        }
+      }),
+      batchUpdateDoctors: (doctorIds, updates) => set((state) => {
+        const logs: PermissionChangeLog[] = []
+        const currentUser = state.user
+        const updatedDoctors = state.doctors.map((d) => {
+          if (doctorIds.includes(d.id)) {
+            const updated = { ...d, ...updates }
+            const before: PermissionChangeLog['before'] = {}
+            const after: PermissionChangeLog['after'] = {}
+            let hasChange = false
+
+            if (d.role !== updated.role) {
+              before.role = d.role
+              after.role = updated.role
+              hasChange = true
+            }
+            if (
+              d.permissions?.length !== updated.permissions?.length ||
+              d.permissions?.some((p) => !updated.permissions?.includes(p)) ||
+              updated.permissions?.some((p) => !d.permissions?.includes(p))
+            ) {
+              before.permissions = [...(d.permissions || [])]
+              after.permissions = [...(updated.permissions || [])]
+              hasChange = true
+            }
+            if (d.storeId !== updated.storeId || d.storeName !== updated.storeName) {
+              before.storeId = d.storeId
+              before.storeName = d.storeName
+              after.storeId = updated.storeId
+              after.storeName = updated.storeName
+              hasChange = true
+            }
+            if (d.status !== updated.status) {
+              before.status = d.status
+              after.status = updated.status
+              hasChange = true
+            }
+
+            if (hasChange) {
+              logs.push({
+                id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                doctorId: d.id,
+                doctorName: d.name,
+                changeType: before.role ? 'batch_role' : 'batch_status',
+                operatorId: currentUser?.id || '',
+                operatorName: currentUser?.name || '',
+                changeTime: new Date().toLocaleString('zh-CN'),
+                before,
+                after,
+              })
+            }
+            return updated
+          }
+          return d
+        })
+        return {
+          doctors: updatedDoctors,
+          permissionChangeLogs: [...logs, ...state.permissionChangeLogs],
+        }
+      }),
+      batchSetDoctorsStatus: (doctorIds, status) => set((state) => {
+        const logs: PermissionChangeLog[] = []
+        const currentUser = state.user
+        const updatedDoctors = state.doctors.map((d) => {
+          if (doctorIds.includes(d.id) && d.status !== status) {
+            logs.push({
+              id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              doctorId: d.id,
+              doctorName: d.name,
+              changeType: 'batch_status',
+              operatorId: currentUser?.id || '',
+              operatorName: currentUser?.name || '',
+              changeTime: new Date().toLocaleString('zh-CN'),
+              before: { status: d.status },
+              after: { status },
+            })
+            return { ...d, status }
+          }
+          return d
+        })
+        return {
+          doctors: updatedDoctors,
+          permissionChangeLogs: [...logs, ...state.permissionChangeLogs],
+        }
+      }),
+      batchChangeDoctorsStore: (doctorIds, storeId, storeName) => set((state) => {
+        const logs: PermissionChangeLog[] = []
+        const currentUser = state.user
+        const updatedDoctors = state.doctors.map((d) => {
+          if (doctorIds.includes(d.id)) {
+            const before = { storeId: d.storeId, storeName: d.storeName }
+            const after = { storeId, storeName }
+            if (before.storeId !== after.storeId || before.storeName !== after.storeName) {
+              logs.push({
+                id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                doctorId: d.id,
+                doctorName: d.name,
+                changeType: 'batch_store',
+                operatorId: currentUser?.id || '',
+                operatorName: currentUser?.name || '',
+                changeTime: new Date().toLocaleString('zh-CN'),
+                before,
+                after,
+              })
+            }
+            return { ...d, storeId, storeName }
+          }
+          return d
+        })
+        return {
+          doctors: updatedDoctors,
+          permissionChangeLogs: [...logs, ...state.permissionChangeLogs],
+        }
+      }),
+
+      permissionChangeLogs: [],
+      addPermissionChangeLog: (log) => set((state) => ({
+        permissionChangeLogs: [
           {
-            ...doctor,
-            id: `doc_${Date.now()}`,
-            createdAt: new Date().toISOString(),
-          } as DoctorAccount,
+            ...log,
+            id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            changeTime: new Date().toLocaleString('zh-CN'),
+          },
+          ...state.permissionChangeLogs,
         ],
       })),
-      updateDoctor: (doctorId, updates) => set((state) => ({
-        doctors: state.doctors.map((d) =>
-          d.id === doctorId ? { ...d, ...updates } : d
-        ),
-      })),
-      toggleDoctorStatus: (doctorId) => set((state) => ({
-        doctors: state.doctors.map((d) =>
-          d.id === doctorId
-            ? { ...d, status: d.status === 'on_duty' ? 'off_duty' : 'on_duty' }
-            : d
-        ),
-      })),
-      batchUpdateDoctors: (doctorIds, updates) => set((state) => ({
-        doctors: state.doctors.map((d) =>
-          doctorIds.includes(d.id) ? { ...d, ...updates } : d
-        ),
-      })),
-      batchSetDoctorsStatus: (doctorIds, status) => set((state) => ({
-        doctors: state.doctors.map((d) =>
-          doctorIds.includes(d.id) ? { ...d, status } : d
-        ),
-      })),
-      batchChangeDoctorsStore: (doctorIds, storeId, storeName) => set((state) => ({
-        doctors: state.doctors.map((d) =>
-          doctorIds.includes(d.id) ? { ...d, storeId, storeName } : d
-        ),
-      })),
+      getDoctorPermissionLogs: (doctorId) => {
+        const state = get()
+        return state.permissionChangeLogs
+          .filter((log) => log.doctorId === doctorId)
+          .sort((a, b) => new Date(b.changeTime).getTime() - new Date(a.changeTime).getTime())
+      },
       
       exportHistory: [
         { id: '1', name: '6月经营月报', type: 'excel', category: '经营报表', time: '2024-06-22 10:30', status: 'success', size: '245KB', fileSize: 245 * 1024 },
@@ -322,6 +581,7 @@ export const useAppStore = create<AppState>()(
         records: state.records,
         doctors: state.doctors,
         exportHistory: state.exportHistory,
+        permissionChangeLogs: state.permissionChangeLogs,
         collapsed: state.collapsed,
         user: state.user,
         selectedStore: state.selectedStore,

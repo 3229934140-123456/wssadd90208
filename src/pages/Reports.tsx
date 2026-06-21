@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import React, { useState, useMemo, useCallback } from 'react'
 import {
   FileText,
   TrendingUp,
@@ -95,6 +95,12 @@ export default function Reports() {
   const [historyFilterCategory, setHistoryFilterCategory] = useState<string>('all')
   const [historyFilterTime, setHistoryFilterTime] = useState<string>('all')
   const [historySearch, setHistorySearch] = useState('')
+  const [showDrawer, setShowDrawer] = useState(false)
+  const [drawerActiveTab, setDrawerActiveTab] = useState<'all' | 'processing' | 'success' | 'failed'>('all')
+  const [historyFilterStore, setHistoryFilterStore] = useState<string>('')
+  const [historyFilterProjectType, setHistoryFilterProjectType] = useState<string>('')
+  const [historyFilterStatus, setHistoryFilterStatus] = useState<string>('all')
+  const [expandedHistoryItems, setExpandedHistoryItems] = useState<Set<string>>(new Set())
   
   const { exportHistory, addExportHistory, updateExportHistory, deleteExportHistory } = useAppStore()
   const mainReport = reports[0]
@@ -359,10 +365,12 @@ export default function Reports() {
         status: 'success',
         size: formatFileSize(result.fileSize),
         fileSize: result.fileSize,
+        realFileName: result.fileName,
       })
     } catch (error) {
       updateExportHistory(historyId, {
         status: 'failed',
+        errorMessage: error instanceof Error ? error.message : '导出失败，请稍后重试',
       })
     }
   }, [activeCategory, dateRange, selectedStores, selectedProjectType, addExportHistory, updateExportHistory, getReportData])
@@ -396,6 +404,92 @@ export default function Reports() {
       deleteExportHistory(id)
     }
   }, [deleteExportHistory])
+
+  const handleRetry = useCallback(async (item: any) => {
+    const categoryName = categoryList.find((c) => c.id === (item.reportCategory || activeCategory))?.name || item.category || '报表'
+
+    let reportDataToUse = item.generatedConfig
+    if (!reportDataToUse && item.reportCategory) {
+      reportDataToUse = getReportData(item.reportCategory as ReportCategory)
+    } else if (!reportDataToUse) {
+      reportDataToUse = getReportData(activeCategory)
+    }
+
+    updateExportHistory(item.id, {
+      status: 'processing',
+      errorMessage: undefined,
+    })
+
+    try {
+      const result = await exportReport({
+        type: item.type,
+        name: item.name,
+        category: categoryName,
+        data: reportDataToUse,
+      })
+
+      downloadFile(result.blob, result.fileName)
+
+      updateExportHistory(item.id, {
+        status: 'success',
+        size: formatFileSize(result.fileSize),
+        fileSize: result.fileSize,
+        realFileName: result.fileName,
+        errorMessage: undefined,
+      })
+    } catch (error) {
+      updateExportHistory(item.id, {
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : '导出失败，请稍后重试',
+      })
+    }
+  }, [activeCategory, getReportData, updateExportHistory])
+
+  const toggleHistoryItemExpand = useCallback((id: string) => {
+    setExpandedHistoryItems((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  const processingCount = useMemo(
+    () => exportHistory.filter((e) => e.status === 'processing').length,
+    [exportHistory]
+  )
+
+  const drawerStats = useMemo(() => {
+    const total = exportHistory.length
+    const success = exportHistory.filter((e) => e.status === 'success').length
+    const failed = exportHistory.filter((e) => e.status === 'failed').length
+    const processing = exportHistory.filter((e) => e.status === 'processing').length
+    return { total, success, failed, processing }
+  }, [exportHistory])
+
+  const filteredDrawerHistory = useMemo(() => {
+    const sorted = [...exportHistory].sort((a, b) => {
+      const timeA = new Date(a.time.replace(/\//g, '-')).getTime()
+      const timeB = new Date(b.time.replace(/\//g, '-')).getTime()
+      return timeB - timeA
+    })
+    if (drawerActiveTab === 'all') return sorted
+    return sorted.filter((e) => e.status === drawerActiveTab)
+  }, [exportHistory, drawerActiveTab])
+
+  const getProjectTypeName = (type: string): string => {
+    const map: Record<string, string> = {
+      injection: '注射类',
+      filling: '填充类',
+      wrinkle_removal: '除皱类',
+      hydration: '水光类',
+      lifting: '提升类',
+    }
+    return map[type] || '全部'
+  }
 
   const isWithinDays = useCallback((timeStr: string, days: number): boolean => {
     try {
@@ -433,9 +527,27 @@ export default function Reports() {
         }
       }
 
+      if (historyFilterStore) {
+        if (!item.stores || !item.stores.includes(historyFilterStore)) {
+          return false
+        }
+      }
+
+      if (historyFilterProjectType) {
+        if (item.projectType !== historyFilterProjectType) {
+          return false
+        }
+      }
+
+      if (historyFilterStatus !== 'all') {
+        if (item.status !== historyFilterStatus) {
+          return false
+        }
+      }
+
       return true
     })
-  }, [exportHistory, historyFilterCategory, historyFilterTime, historySearch, isWithinDays])
+  }, [exportHistory, historyFilterCategory, historyFilterTime, historySearch, historyFilterStore, historyFilterProjectType, historyFilterStatus, isWithinDays])
 
   const recentExportHistory = useMemo(() => exportHistory.slice(0, 5), [exportHistory])
 
@@ -635,6 +747,18 @@ export default function Reports() {
                   <File className="w-3.5 h-3.5" />
                   导出 PDF
                 </button>
+                <button
+                  onClick={() => setShowDrawer(true)}
+                  className="relative flex items-center gap-1.5 px-3 py-1.5 border border-medical-200 bg-medical-50 text-medical-700 rounded-lg text-xs font-medium hover:bg-medical-100 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  导出队列
+                  {processingCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full bg-red-500 text-white text-[10px] font-bold">
+                      {processingCount > 99 ? '99+' : processingCount}
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
           </div>
@@ -689,6 +813,41 @@ export default function Reports() {
                 <option value="customer">客户报表</option>
               </select>
 
+              <select
+                value={historyFilterStore}
+                onChange={(e) => setHistoryFilterStore(e.target.value)}
+                className="input py-1.5 text-xs w-36"
+              >
+                <option value="">全部门店</option>
+                {stores.filter((s) => s.status === 'active').map((s) => (
+                  <option key={s.id} value={s.id}>{s.shortName}</option>
+                ))}
+              </select>
+
+              <select
+                value={historyFilterProjectType}
+                onChange={(e) => setHistoryFilterProjectType(e.target.value)}
+                className="input py-1.5 text-xs w-32"
+              >
+                <option value="">全部项目</option>
+                <option value="injection">注射类</option>
+                <option value="filling">填充类</option>
+                <option value="wrinkle_removal">除皱类</option>
+                <option value="hydration">水光类</option>
+                <option value="lifting">提升类</option>
+              </select>
+
+              <select
+                value={historyFilterStatus}
+                onChange={(e) => setHistoryFilterStatus(e.target.value)}
+                className="input py-1.5 text-xs w-28"
+              >
+                <option value="all">全部状态</option>
+                <option value="success">成功</option>
+                <option value="processing">生成中</option>
+                <option value="failed">失败</option>
+              </select>
+
               <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg">
                 {[
                   { label: '近7天', value: '7days' },
@@ -726,125 +885,224 @@ export default function Reports() {
             <table className="w-full">
               <thead className="bg-slate-50 sticky top-0 z-10">
                 <tr className="border-b border-slate-200">
+                  <th className="w-10 py-3 px-2"></th>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600">文件名</th>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-24">报表类别</th>
                   <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-20">格式</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-24">时间范围</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-28">门店</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-24">项目类型</th>
                   <th className="text-right py-3 px-4 text-xs font-semibold text-slate-600 w-24">文件大小</th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-48">生成条件</th>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-600 w-40">生成时间</th>
                   <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-20">状态</th>
                   <th className="text-center py-3 px-4 text-xs font-semibold text-slate-600 w-32">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredExportHistory.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3 px-4">
-                      <div
-                        className="flex items-center gap-2 cursor-pointer group"
-                        onClick={() => item.status === 'success' && handleRedownload(item)}
-                      >
-                        {item.type === 'excel' ? (
-                          <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center flex-shrink-0 group-hover:bg-emerald-100 transition-colors">
-                            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                {filteredExportHistory.map((item) => {
+                  const isExpanded = expandedHistoryItems.has(item.id)
+                  return (
+                    <React.Fragment key={item.id}>
+                      <tr className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-2 text-center">
+                          <button
+                            onClick={() => toggleHistoryItemExpand(item.id)}
+                            className="w-6 h-6 rounded hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+                          >
+                            <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          </button>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div
+                            className="flex items-center gap-2 cursor-pointer group"
+                            onClick={() => item.status === 'success' && handleRedownload(item)}
+                          >
+                            {item.type === 'excel' ? (
+                              <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center flex-shrink-0 group-hover:bg-emerald-100 transition-colors">
+                                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                              </div>
+                            ) : (
+                              <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0 group-hover:bg-red-100 transition-colors">
+                                <File className="w-4 h-4 text-red-500" />
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <span className="text-sm font-medium text-slate-700 group-hover:text-medical-600 transition-colors truncate max-w-xs block">
+                                {item.name}
+                              </span>
+                              {item.realFileName && (
+                                <span className="text-[10px] text-slate-400 truncate max-w-xs block">{item.realFileName}</span>
+                              )}
+                            </div>
                           </div>
-                        ) : (
-                          <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center flex-shrink-0 group-hover:bg-red-100 transition-colors">
-                            <File className="w-4 h-4 text-red-500" />
-                          </div>
-                        )}
-                        <span className="text-sm font-medium text-slate-700 group-hover:text-medical-600 transition-colors truncate max-w-xs">
-                          {item.name}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-slate-100 text-slate-600">
-                        {item.category}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-center">
-                      <span className={`text-xs font-semibold ${
-                        item.type === 'excel' ? 'text-emerald-600' : 'text-red-500'
-                      }`}>
-                        {item.type === 'excel' ? 'Excel' : 'PDF'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right text-sm text-slate-600 font-mono">
-                      {item.size || '-'}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="space-y-0.5">
-                        {item.dateRange && (
-                          <div className="flex items-center gap-1 text-xs text-slate-500">
-                            <Calendar className="w-3 h-3" />
-                            <span>{item.dateRange}</span>
-                          </div>
-                        )}
-                        {item.stores && (
-                          <div className="flex items-center gap-1 text-xs text-slate-500">
-                            <MapPin className="w-3 h-3" />
-                            <span className="truncate max-w-32" title={getStoreNames(item.stores)}>
-                              {getStoreNames(item.stores)}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-slate-100 text-slate-600">
+                            {item.category}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <span className={`text-xs font-semibold ${
+                            item.type === 'excel' ? 'text-emerald-600' : 'text-red-500'
+                          }`}>
+                            {item.type === 'excel' ? 'Excel' : 'PDF'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          {item.dateRange ? (
+                            <span className="text-xs text-slate-600">{item.dateRange}</span>
+                          ) : (
+                            <span className="text-xs text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          {item.stores && item.stores.length > 0 ? (
+                            <span
+                              className="text-xs text-slate-600 cursor-help"
+                              title={item.stores.map((id) => stores.find((s) => s.id === id)?.name || id).join('、')}
+                            >
+                              {item.stores.length > 1 ? `已选${item.stores.length}家` : (stores.find((s) => s.id === item.stores![0])?.shortName || '-')}
                             </span>
+                          ) : (
+                            <span className="text-xs text-slate-500">全部门店</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          {item.projectType ? (
+                            <span className="text-xs text-slate-600">{getProjectTypeName(item.projectType)}</span>
+                          ) : (
+                            <span className="text-xs text-slate-400">全部</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right text-sm text-slate-600 font-mono">
+                          {item.size || '-'}
+                        </td>
+                        <td className="py-3 px-4 text-sm text-slate-500">
+                          <div className="flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-slate-400" />
+                            <span>{item.time}</span>
                           </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-sm text-slate-500">
-                      <div className="flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-slate-400" />
-                        <span>{item.time}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-center">
-                      {item.status === 'success' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-50 text-emerald-600">
-                          <Check className="w-3 h-3" />
-                          成功
-                        </span>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          {item.status === 'success' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-50 text-emerald-600">
+                              <Check className="w-3 h-3" />
+                              成功
+                            </span>
+                          )}
+                          {item.status === 'processing' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-medical-50 text-medical-600">
+                              <div className="w-3 h-3 border-2 border-medical-500 border-t-transparent rounded-full animate-spin" />
+                              处理中
+                            </span>
+                          )}
+                          {item.status === 'failed' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600">
+                              <X className="w-3 h-3" />
+                              失败
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => item.status === 'success' && handleRedownload(item)}
+                              disabled={item.status !== 'success'}
+                              className={`p-1.5 rounded-lg transition-colors ${
+                                item.status === 'success'
+                                  ? 'hover:bg-medical-50 text-medical-600 hover:text-medical-700'
+                                  : 'text-slate-300 cursor-not-allowed'
+                              }`}
+                              title="重新下载"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                            </button>
+                            {item.status === 'failed' && (
+                              <button
+                                onClick={() => handleRetry(item)}
+                                className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 transition-colors"
+                                title="一键重试"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteHistory(item.id)}
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                              title="删除"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-slate-50/60">
+                          <td></td>
+                          <td colSpan={10} className="py-3 px-4">
+                            <div className="bg-white rounded-xl border border-slate-200 p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div className="w-6 h-6 rounded-md bg-medical-50 flex items-center justify-center">
+                                  <Stethoscope className="w-3.5 h-3.5 text-medical-600" />
+                                </div>
+                                <span className="text-sm font-semibold text-slate-700">生成条件</span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-4">
+                                <div className="flex items-start gap-2">
+                                  <Calendar className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-0.5">时间范围</div>
+                                    <div className="text-xs text-slate-700 font-medium">{item.dateRange || '-'}</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                  <MapPin className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-0.5">门店</div>
+                                    <div className="text-xs text-slate-700 font-medium">
+                                      {item.stores && item.stores.length > 0
+                                        ? (
+                                          <span title={item.stores.map((id) => stores.find((s) => s.id === id)?.name || id).join('、')}>
+                                            {item.stores.length > 1
+                                              ? `已选${item.stores.length}家门店`
+                                              : (stores.find((s) => s.id === item.stores![0])?.name || '-')
+                                            }
+                                          </span>
+                                        )
+                                        : '全部门店'}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                  <FileText className="w-4 h-4 text-slate-400 mt-0.5 flex-shrink-0" />
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-0.5">项目类型</div>
+                                    <div className="text-xs text-slate-700 font-medium">{item.projectType ? getProjectTypeName(item.projectType) : '全部'}</div>
+                                  </div>
+                                </div>
+                              </div>
+                              {item.realFileName && (
+                                <div className="mt-3 pt-3 border-t border-slate-100">
+                                  <div className="text-[10px] text-slate-400 mb-0.5">真实文件名</div>
+                                  <div className="text-xs text-slate-600 font-mono">{item.realFileName}</div>
+                                </div>
+                              )}
+                              {item.status === 'failed' && item.errorMessage && (
+                                <div className="mt-3 pt-3 border-t border-slate-100">
+                                  <div className="text-[10px] text-red-400 mb-0.5">错误信息</div>
+                                  <div className="text-xs text-red-600">{item.errorMessage}</div>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                      {item.status === 'processing' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-medical-50 text-medical-600">
-                          <div className="w-3 h-3 border-2 border-medical-500 border-t-transparent rounded-full animate-spin" />
-                          处理中
-                        </span>
-                      )}
-                      {item.status === 'failed' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600">
-                          <X className="w-3 h-3" />
-                          失败
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center justify-center gap-1">
-                        <button
-                          onClick={() => item.status === 'success' && handleRedownload(item)}
-                          disabled={item.status !== 'success'}
-                          className={`p-1.5 rounded-lg transition-colors ${
-                            item.status === 'success'
-                              ? 'hover:bg-medical-50 text-medical-600 hover:text-medical-700'
-                              : 'text-slate-300 cursor-not-allowed'
-                          }`}
-                          title="重新下载"
-                        >
-                          <RefreshCw className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteHistory(item.id)}
-                          className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
-                          title="删除"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  )
+                })}
                 {filteredExportHistory.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-16 text-center">
+                    <td colSpan={11} className="py-16 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center">
                           <History className="w-8 h-8 text-slate-300" />
@@ -868,6 +1126,229 @@ export default function Reports() {
             >
               关闭
             </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showDrawer && (
+      <div className="fixed inset-0 z-50">
+        <div
+          className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
+          onClick={() => setShowDrawer(false)}
+        />
+        <div className="absolute right-0 top-0 h-full w-96 bg-white shadow-2xl flex flex-col animate-[slideInRight_0.3s_ease-out]">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-gradient-to-r from-medical-50 to-white">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-medical-100 flex items-center justify-center">
+                <Download className="w-5 h-5 text-medical-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">导出任务队列</h2>
+                <p className="text-xs text-slate-500">共 {drawerStats.total} 条任务</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowDrawer(false)}
+              className="w-9 h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors"
+            >
+              <X className="w-5 h-5 text-slate-500" />
+            </button>
+          </div>
+
+          <div className="flex items-center border-b border-slate-200 px-2">
+            {[
+              { key: 'all' as const, label: '全部', count: drawerStats.total },
+              { key: 'processing' as const, label: '生成中', count: drawerStats.processing },
+              { key: 'success' as const, label: '成功', count: drawerStats.success },
+              { key: 'failed' as const, label: '失败', count: drawerStats.failed },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setDrawerActiveTab(tab.key)}
+                className={`relative flex-1 px-3 py-3 text-xs font-medium transition-colors ${
+                  drawerActiveTab === tab.key
+                    ? 'text-medical-600'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-center gap-1.5">
+                  <span>{tab.label}</span>
+                  {tab.count > 0 && (
+                    <span className={`min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full text-[10px] font-bold ${
+                      drawerActiveTab === tab.key
+                        ? tab.key === 'failed'
+                          ? 'bg-red-100 text-red-600'
+                          : tab.key === 'success'
+                          ? 'bg-emerald-100 text-emerald-600'
+                          : tab.key === 'processing'
+                          ? 'bg-medical-100 text-medical-600'
+                          : 'bg-slate-200 text-slate-600'
+                        : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      {tab.count > 99 ? '99+' : tab.count}
+                    </span>
+                  )}
+                </div>
+                {drawerActiveTab === tab.key && (
+                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-medical-500 rounded-full" />
+                )}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {filteredDrawerHistory.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16">
+                <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-3">
+                  <Download className="w-8 h-8 text-slate-300" />
+                </div>
+                <p className="text-sm text-slate-400">暂无任务记录</p>
+              </div>
+            ) : (
+              filteredDrawerHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className="bg-white border border-slate-200 rounded-xl p-4 hover:shadow-md hover:border-slate-300 transition-all"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                      item.type === 'excel' ? 'bg-emerald-50' : 'bg-red-50'
+                    }`}>
+                      {item.type === 'excel' ? (
+                        <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+                      ) : (
+                        <File className="w-5 h-5 text-red-500" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-slate-800 truncate">{item.name}</span>
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              item.type === 'excel'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : 'bg-red-100 text-red-600'
+                            }`}>
+                              {item.type === 'excel' ? 'Excel' : 'PDF'}
+                            </span>
+                          </div>
+                          {item.realFileName && (
+                            <p className="text-[10px] text-slate-400 mt-0.5 truncate font-mono">{item.realFileName}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex items-center gap-1.5">
+                        {item.status === 'processing' && (
+                          <>
+                            <div className="w-3.5 h-3.5 border-2 border-medical-500 border-t-transparent rounded-full animate-spin" />
+                            <span className="text-xs text-slate-500">正在生成...</span>
+                          </>
+                        )}
+                        {item.status === 'success' && (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-500" />
+                            <span className="text-xs text-emerald-600 font-medium">生成成功</span>
+                            {item.size && <span className="text-xs text-slate-400">· {item.size}</span>}
+                          </>
+                        )}
+                        {item.status === 'failed' && (
+                          <>
+                            <X className="w-3.5 h-3.5 text-red-500" />
+                            <span className="text-xs text-slate-500">生成失败</span>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="mt-2.5 text-xs text-slate-500 space-y-1">
+                        {(item.dateRange || item.stores) && (
+                          <div className="line-clamp-2">
+                            {item.dateRange && (
+                              <span className="inline-flex items-center gap-0.5">
+                                <Calendar className="w-3 h-3 inline" />
+                                {item.dateRange}
+                              </span>
+                            )}
+                            {item.dateRange && item.stores && <span className="mx-1">·</span>}
+                            {item.stores && (
+                              <span
+                                className="inline-flex items-center gap-0.5 cursor-help"
+                                title={item.stores.map((id) => stores.find((s) => s.id === id)?.name || id).join('、')}
+                              >
+                                <MapPin className="w-3 h-3 inline" />
+                                {item.stores.length === 0 ? '全部门店' : getStoreNames(item.stores)}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {item.status === 'failed' && item.errorMessage && (
+                          <div className="text-red-500 text-[11px] truncate" title={item.errorMessage}>
+                            {item.errorMessage}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex items-center gap-2">
+                        {item.status === 'success' && (
+                          <button
+                            onClick={() => handleRedownload(item)}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-medical-50 text-medical-600 text-xs font-medium hover:bg-medical-100 transition-colors"
+                          >
+                            <Download className="w-3 h-3" />
+                            重新下载
+                          </button>
+                        )}
+                        {item.status === 'failed' && (
+                          <button
+                            onClick={() => handleRetry(item)}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 text-xs font-medium hover:bg-emerald-100 transition-colors"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            一键重试
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeleteHistory(item.id)}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-50 text-slate-500 text-xs font-medium hover:bg-red-50 hover:text-red-500 transition-colors ml-auto"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="px-5 py-3 border-t border-slate-200 bg-slate-50/50">
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-500">总数</span>
+                  <span className="font-semibold text-slate-700">{drawerStats.total}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Check className="w-3 h-3 text-emerald-500" />
+                  <span className="text-slate-500">成功</span>
+                  <span className="font-semibold text-emerald-600">{drawerStats.success}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <X className="w-3 h-3 text-red-500" />
+                  <span className="text-slate-500">失败</span>
+                  <span className="font-semibold text-red-500">{drawerStats.failed}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDrawer(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-200 text-slate-600 font-medium hover:bg-slate-300 transition-colors"
+              >
+                关闭
+              </button>
+            </div>
           </div>
         </div>
       </div>

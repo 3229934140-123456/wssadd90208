@@ -35,6 +35,15 @@ export default {
       fontFamily: {
         sans: ['"PingFang SC"', '"Microsoft YaHei"', 'system-ui', 'sans-serif'],
       },
+      keyframes: {
+        slideInRight: {
+          '0%': { transform: 'translateX(100%)' },
+          '100%': { transform: 'translateX(0)' },
+        },
+      },
+      animation: {
+        slideInRight: 'slideInRight 0.3s ease-out',
+      },
     },
   },
   plugins: [],
