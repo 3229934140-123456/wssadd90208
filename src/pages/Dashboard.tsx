@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Users,
   Activity,
+  User,
 } from 'lucide-react'
 import {
   AreaChart,
@@ -31,14 +32,18 @@ import {
   Legend,
 } from 'recharts'
 import { StatCard, DataTable, Badge } from '../components/ui'
+import RecordDetailModal from '../components/RecordDetailModal'
+import DoctorDetailModal from '../components/DoctorDetailModal'
+import { useAppStore } from '../store'
 import {
   stores,
   customerRecords,
   reports,
   riskPoints,
   projectTemplates,
+  doctors,
 } from '../data/mockData'
-import type { CustomerRecord, RiskPoint, Store } from '../types'
+import type { CustomerRecord, RiskPoint, Store, Doctor } from '../types'
 
 type TimeRange = 'today' | 'week' | 'month' | 'quarter'
 
@@ -96,6 +101,7 @@ function isInTimeRange(dateStr: string, range: TimeRange): boolean {
 }
 
 export default function Dashboard() {
+  const { openRecordDetail, openDoctorDetail } = useAppStore()
   const [timeRange, setTimeRange] = useState<TimeRange>('month')
   const [selectedStore, setSelectedStore] = useState<string>('all')
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false)
@@ -197,6 +203,8 @@ export default function Dashboard() {
       avgPrice: number
       followUpRate: number
       riskCount: number
+      avgDosage: number
+      complaintCount: number
       rank: number
     }
 
@@ -213,9 +221,14 @@ export default function Dashboard() {
           avgPrice: 0,
           followUpRate: 0,
           riskCount: 0,
+          avgDosage: 0,
+          complaintCount: 0,
           rank: 0,
         })
       })
+
+    const storeTotalDosage = new Map<string, number>()
+    const storeComplaintCount = new Map<string, number>()
 
     filteredRecords.forEach((r) => {
       const data = storeMap.get(r.storeId)
@@ -224,6 +237,19 @@ export default function Dashboard() {
       data.revenue += r.totalAmount
       if (r.followUps && r.followUps.length > 0) {
         data.followUpRate += 1
+      }
+
+      const totalDosage = r.drugs.reduce((sum, d) => sum + d.dosage, 0)
+      storeTotalDosage.set(r.storeId, (storeTotalDosage.get(r.storeId) || 0) + totalDosage)
+
+      if (r.riskPoints && r.riskPoints.length > 0) {
+        const highRiskCount = r.riskPoints.filter(
+          (rp) => (rp.level === 'high' || rp.level === 'critical') && 
+                  (rp.status === 'open' || rp.status === 'mitigated')
+        ).length
+        if (highRiskCount > 0) {
+          storeComplaintCount.set(r.storeId, (storeComplaintCount.get(r.storeId) || 0) + highRiskCount)
+        }
       }
     })
 
@@ -242,6 +268,8 @@ export default function Dashboard() {
       ...s,
       avgPrice: s.count > 0 ? Math.round(s.revenue / s.count) : 0,
       followUpRate: s.count > 0 ? Math.round((s.followUpRate / s.count) * 100) : 0,
+      avgDosage: s.count > 0 ? Number(((storeTotalDosage.get(s.storeId) || 0) / s.count).toFixed(1)) : 0,
+      complaintCount: storeComplaintCount.get(s.storeId) || 0,
     }))
 
     result.sort((a, b) => {
@@ -296,6 +324,15 @@ export default function Dashboard() {
     )
   }
 
+  const getStoreDoctors = (storeId: string) => {
+    return doctors.filter(d => d.storeId === storeId && d.status === 'on_duty')
+  }
+
+  const handleDoctorClick = (doctorId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    openDoctorDetail(doctorId)
+  }
+
   const storeColumns = [
     {
       key: 'rank',
@@ -334,6 +371,35 @@ export default function Dashboard() {
           <span className="font-medium text-slate-700">{String(value)}</span>
         </div>
       ),
+    },
+    {
+      key: 'doctor',
+      title: '医生',
+      dataIndex: 'storeId' as const,
+      width: 150,
+      render: (value: unknown, record: any) => {
+        const storeDoctors = getStoreDoctors(String(value))
+        if (storeDoctors.length === 0) {
+          return <span className="text-slate-400 text-sm">暂无</span>
+        }
+        return (
+          <div className="flex flex-wrap gap-1">
+            {storeDoctors.slice(0, 2).map((doctor) => (
+              <button
+                key={doctor.id}
+                onClick={(e) => handleDoctorClick(doctor.id, e)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 bg-medical-50 text-medical-600 rounded-full text-xs hover:bg-medical-100 transition-colors"
+              >
+                <User className="w-3 h-3" />
+                {doctor.name}
+              </button>
+            ))}
+            {storeDoctors.length > 2 && (
+              <span className="text-xs text-slate-400">+{storeDoctors.length - 2}</span>
+            )}
+          </div>
+        )
+      },
     },
     {
       key: 'count',
@@ -381,6 +447,18 @@ export default function Dashboard() {
       ),
     },
     {
+      key: 'avgDosage',
+      title: '平均药品用量(ml/U)',
+      dataIndex: 'avgDosage' as const,
+      align: 'right' as const,
+      render: (value: unknown) => {
+        const v = Number(value)
+        return (
+          <span className="text-slate-700 font-medium">{v.toFixed(1)}</span>
+        )
+      },
+    },
+    {
       key: 'followUpRate',
       title: '复诊率',
       dataIndex: 'followUpRate' as const,
@@ -396,6 +474,20 @@ export default function Dashboard() {
             {v}%
             <SortIcon field="followUpRate" />
           </button>
+        )
+      },
+    },
+    {
+      key: 'complaintCount',
+      title: '客诉关联数',
+      dataIndex: 'complaintCount' as const,
+      align: 'right' as const,
+      render: (value: unknown) => {
+        const v = Number(value)
+        if (v === 0) return <span className="text-emerald-600 font-medium">0</span>
+        const colorClass = v >= 3 ? 'text-red-600' : 'text-amber-600'
+        return (
+          <span className={`font-medium ${colorClass}`}>{v}</span>
         )
       },
     },
@@ -748,8 +840,12 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button className="p-2 rounded-lg text-medical-600 hover:bg-medical-50 transition-colors">
-                      <Eye className="w-4 h-4" />
+                    <button
+                      onClick={() => openRecordDetail(record)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-medical-600 bg-medical-50 hover:bg-medical-100 rounded-lg transition-colors"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      查看详情
                     </button>
                     <button className="p-2 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors">
                       <CheckCircle className="w-4 h-4" />
@@ -783,7 +879,8 @@ export default function Dashboard() {
                 return (
                   <div
                     key={risk.id}
-                    className="p-3 rounded-xl border bg-white hover:shadow-sm transition-shadow"
+                    onClick={() => record && openRecordDetail(record)}
+                    className="p-3 rounded-xl border bg-white hover:shadow-md hover:border-medical-200 transition-all cursor-pointer"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1">
@@ -801,6 +898,7 @@ export default function Dashboard() {
                           </p>
                         )}
                       </div>
+                      <Eye className="w-4 h-4 text-slate-300" />
                     </div>
                   </div>
                 )
@@ -809,6 +907,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      <RecordDetailModal />
+      <DoctorDetailModal />
     </div>
   )
 }

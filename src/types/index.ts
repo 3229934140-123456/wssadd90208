@@ -6,6 +6,20 @@ export type RecordStatus = 'pending' | 'confirmed' | 'rejected' | 'reviewing';
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
+export interface RuleViolation {
+  ruleId: string;
+  ruleName: string;
+  severity: 'high' | 'medium' | 'low';
+  description: string;
+  evidence?: string;
+}
+
+export interface AuditResult {
+  needsReview: boolean;
+  violations: RuleViolation[];
+  riskPoints: RiskPoint[];
+}
+
 export type DrugType = 'botulinum' | 'hyaluronic_acid' | 'collagen' | 'amino_acid' | 'vitamin' | 'other';
 
 export type ProjectCategory = 'injection' | 'filling' | 'wrinkle_removal' | 'hydration' | 'lifting' | 'other';
@@ -231,6 +245,7 @@ export interface CustomerRecord {
   followUps?: FollowUpRecord[];
   qualityScore?: QualityScore;
   riskPoints?: RiskPoint[];
+  ruleViolations?: RuleViolation[];
 }
 
 export interface FollowUpRecord {

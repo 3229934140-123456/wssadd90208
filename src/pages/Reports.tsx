@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import {
   FileText,
   TrendingUp,
@@ -49,8 +49,12 @@ import {
   drugs,
   doctors,
   followUpRecords,
+  qualityScores,
+  riskPoints,
 } from '../data/mockData'
 import type { Report } from '../types'
+import { exportReport, downloadFile } from '../utils/exportUtils'
+import { useAppStore } from '../store'
 
 type ReportCategory = 'business' | 'quality' | 'drug' | 'performance' | 'customer'
 
@@ -72,14 +76,10 @@ const quickRanges = [
   { label: '本年', days: 365 },
 ]
 
-interface ExportHistory {
-  id: string
-  name: string
-  type: 'excel' | 'pdf'
-  category: string
-  time: string
-  status: 'success' | 'processing' | 'failed'
-  size?: string
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
 }
 
 export default function Reports() {
@@ -88,13 +88,8 @@ export default function Reports() {
   const [selectedStores, setSelectedStores] = useState<string[]>([])
   const [selectedProjectType, setSelectedProjectType] = useState('')
   const [showStoreDropdown, setShowStoreDropdown] = useState(false)
-  const [exportHistory, setExportHistory] = useState<ExportHistory[]>([
-    { id: '1', name: '6月经营月报', type: 'excel', category: '经营报表', time: '2024-06-22 10:30', status: 'success', size: '245KB' },
-    { id: '2', name: '质控周报W25', type: 'pdf', category: '质控报表', time: '2024-06-21 16:45', status: 'success', size: '1.2MB' },
-    { id: '3', name: '药品统计6月', type: 'excel', category: '药品报表', time: '2024-06-20 09:15', status: 'success', size: '180KB' },
-    { id: '4', name: '医生绩效报表', type: 'excel', category: '医生绩效报表', time: '2024-06-22 11:02', status: 'processing' },
-  ])
-
+  
+  const { exportHistory, addExportHistory, updateExportHistory } = useAppStore()
   const mainReport = reports[0]
 
   const toggleStore = (storeId: string) => {
@@ -103,25 +98,261 @@ export default function Reports() {
     )
   }
 
-  const handleExport = (type: 'excel' | 'pdf') => {
+  const getBusinessReportData = useCallback(() => {
+    const summary = [
+      { label: '总营收', value: `¥${mainReport.summary.totalRevenue.toLocaleString()}` },
+      { label: '总订单数', value: String(mainReport.summary.totalRecords) },
+      { label: '客户总数', value: String(mainReport.summary.totalCustomers) },
+      { label: '客单价', value: `¥${mainReport.summary.averageOrderValue.toLocaleString()}` },
+    ]
+
+    const storePerformanceData = (mainReport.byStore || []).map((s) => ({
+      门店名称: s.storeName,
+      订单数: s.count,
+      营收: `¥${s.revenue.toLocaleString()}`,
+      达成率: Math.round((s.revenue / 500000) * 100),
+    }))
+
+    const projectDistributionData = mainReport.byProject.map((p) => ({
+      项目名称: p.projectName,
+      数量: p.count,
+      营收: `¥${p.revenue.toLocaleString()}`,
+      占比: `${((p.revenue / mainReport.summary.totalRevenue) * 100).toFixed(1)}%`,
+    }))
+
+    const revenueTrendData = Array.from({ length: 6 }, (_, i) => {
+      const month = new Date()
+      month.setMonth(month.getMonth() - (5 - i))
+      return {
+        月份: `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`,
+        营收: Math.floor(200000 + Math.random() * 400000),
+        订单数: Math.floor(30 + Math.random() * 50),
+      }
+    })
+
+    return {
+      summary,
+      tables: [
+        { title: '门店业绩表', data: storePerformanceData },
+        { title: '项目分布表', data: projectDistributionData },
+        { title: '营收趋势数据', data: revenueTrendData },
+      ],
+    }
+  }, [mainReport])
+
+  const getQualityReportData = useCallback(() => {
+    const passRate = Math.round(((mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount) / 
+      (mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount + mainReport.qualityStats.fairCount + mainReport.qualityStats.poorCount)) * 100)
+    
+    const summary = [
+      { label: '平均质控分', value: String(mainReport.qualityStats.avgScore) },
+      { label: '质控通过率', value: `${passRate}%` },
+      { label: '风险事件数', value: String(mainReport.riskStats.total) },
+      { label: '待整改项', value: String(mainReport.riskStats.openCount) },
+    ]
+
+    const qualityScoreData = [
+      { 等级: '优秀 (≥90分)', 数量: mainReport.qualityStats.excellentCount, 占比: `${((mainReport.qualityStats.excellentCount / (mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount + mainReport.qualityStats.fairCount + mainReport.qualityStats.poorCount)) * 100).toFixed(1)}%` },
+      { 等级: '良好 (80-89分)', 数量: mainReport.qualityStats.goodCount, 占比: `${((mainReport.qualityStats.goodCount / (mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount + mainReport.qualityStats.fairCount + mainReport.qualityStats.poorCount)) * 100).toFixed(1)}%` },
+      { 等级: '一般 (70-79分)', 数量: mainReport.qualityStats.fairCount, 占比: `${((mainReport.qualityStats.fairCount / (mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount + mainReport.qualityStats.fairCount + mainReport.qualityStats.poorCount)) * 100).toFixed(1)}%` },
+      { 等级: '较差 (<70分)', 数量: mainReport.qualityStats.poorCount, 占比: `${((mainReport.qualityStats.poorCount / (mainReport.qualityStats.excellentCount + mainReport.qualityStats.goodCount + mainReport.qualityStats.fairCount + mainReport.qualityStats.poorCount)) * 100).toFixed(1)}%` },
+    ]
+
+    const riskStatsData = [
+      { 风险类别: '注射规范', 数量: 5, 高风险: 2, 中风险: 2, 低风险: 1 },
+      { 风险类别: '药品管理', 数量: 3, 高风险: 1, 中风险: 1, 低风险: 1 },
+      { 风险类别: '记录完整', 数量: 4, 高风险: 0, 中风险: 2, 低风险: 2 },
+      { 风险类别: '无菌操作', 数量: 2, 高风险: 1, 中风险: 0, 低风险: 1 },
+      { 风险类别: '患者告知', 数量: 2, 高风险: 0, 中风险: 1, 低风险: 1 },
+    ]
+
+    return {
+      summary,
+      tables: [
+        { title: '质控评分表', data: qualityScoreData },
+        { title: '风险点统计表', data: riskStatsData },
+      ],
+    }
+  }, [mainReport])
+
+  const getDrugReportData = useCallback(() => {
+    const totalDrugValue = mainReport.drugStats.reduce((s, d) => s + d.totalValue, 0)
+    const warningCount = drugs.filter((d) => d.stock <= d.warningStock).length
+
+    const summary = [
+      { label: '药品品类数', value: String(drugs.length) },
+      { label: '药品使用次数', value: String(mainReport.summary.drugUsageCount) },
+      { label: '药品总营收', value: `¥${totalDrugValue.toLocaleString()}` },
+      { label: '库存预警', value: String(warningCount) },
+    ]
+
+    const drugUsageData = mainReport.drugStats.map((d) => ({
+      药品名称: d.drugName,
+      使用量: `${d.totalUsage}${d.unit}`,
+      使用金额: `¥${d.totalValue.toLocaleString()}`,
+      库存状态: (() => {
+        const drug = drugs.find((dr) => dr.name === d.drugName)
+        if (!drug) return '正常'
+        if (drug.stock === 0) return '缺货'
+        if (drug.stock <= drug.warningStock) return '库存不足'
+        return '正常'
+      })(),
+    }))
+
+    const stockWarningData = drugs
+      .filter((d) => d.stock <= d.warningStock)
+      .slice(0, 10)
+      .map((d) => ({
+        药品名称: d.name,
+        品牌: d.brand,
+        规格: d.specification,
+        当前库存: `${d.stock}${d.unit}`,
+        预警值: `${d.warningStock}${d.unit}`,
+        状态: d.stock === 0 ? '缺货' : d.status === 'expiring' ? '即将过期' : '库存不足',
+      }))
+
+    return {
+      summary,
+      tables: [
+        { title: '药品使用统计表', data: drugUsageData },
+        { title: '库存预警表', data: stockWarningData },
+      ],
+    }
+  }, [mainReport])
+
+  const getPerformanceReportData = useCallback(() => {
+    const avgPerformance = Math.round(mainReport.summary.totalRevenue / mainReport.summary.doctorCount)
+    const avgScore = (mainReport.byDoctor.reduce((s, d) => s + d.avgScore, 0) / mainReport.byDoctor.length).toFixed(1)
+
+    const summary = [
+      { label: '在岗医生数', value: String(mainReport.summary.doctorCount) },
+      { label: '人均业绩', value: `¥${avgPerformance.toLocaleString()}` },
+      { label: '人均项目量', value: (mainReport.summary.totalRecords / mainReport.summary.doctorCount).toFixed(1) },
+      { label: '平均质控分', value: avgScore },
+    ]
+
+    const doctorPerformanceData = mainReport.byDoctor
+      .sort((a, b) => b.revenue - a.revenue)
+      .map((d, idx) => ({
+        排名: idx + 1,
+        医生姓名: d.doctorName,
+        门店: (doctors.find((doc) => doc.id === d.doctorId)?.storeName) || '-',
+        项目量: d.count,
+        业绩: `¥${d.revenue.toLocaleString()}`,
+        平均分: d.avgScore,
+      }))
+
+    const qualityRankData = [...mainReport.byDoctor]
+      .sort((a, b) => b.avgScore - a.avgScore)
+      .map((d, idx) => ({
+        排名: idx + 1,
+        医生姓名: d.doctorName,
+        职称: (() => {
+          const doc = doctors.find((doc) => doc.id === d.doctorId)
+          const titleMap: Record<string, string> = { chief: '主任医师', associate_chief: '副主任医师', attending: '主治医师', resident: '住院医师' }
+          return doc ? titleMap[doc.title] || '-' : '-'
+        })(),
+        平均分: d.avgScore,
+        项目量: d.count,
+      }))
+
+    return {
+      summary,
+      tables: [
+        { title: '医生业绩排名', data: doctorPerformanceData },
+        { title: '质控评分排名', data: qualityRankData },
+      ],
+    }
+  }, [mainReport])
+
+  const getCustomerReportData = useCallback(() => {
+    const summary = [
+      { label: '客户总数', value: String(mainReport.summary.totalCustomers) },
+      { label: '新增客户', value: String(mainReport.summary.newCustomers) },
+      { label: '平均满意度', value: `${mainReport.customerSatisfaction.avgSatisfaction}分` },
+      { label: '回访响应率', value: `${Math.round(mainReport.customerSatisfaction.responseRate * 100)}%` },
+    ]
+
+    const customerProfileData = [
+      { 年龄段: '18-25岁', 人数: 5, 占比: '11.1%' },
+      { 年龄段: '26-30岁', 人数: 12, 占比: '26.7%' },
+      { 年龄段: '31-35岁', 人数: 15, 占比: '33.3%' },
+      { 年龄段: '36-40岁', 人数: 8, 占比: '17.8%' },
+      { 年龄段: '41-45岁', 人数: 4, 占比: '8.9%' },
+      { 年龄段: '45岁+', 人数: 2, 占比: '4.4%' },
+    ]
+
+    const satisfactionData = followUpRecords.slice(0, 15).map((fu) => {
+      const record = customerRecords.find((r) => r.id === fu.recordId)
+      return {
+        客户姓名: record?.customerName || '-',
+        回访方式: fu.type === 'phone' ? '电话' : fu.type === 'wechat' ? '微信' : fu.type === 'visit' ? '到店' : '其他',
+        满意度: `${fu.satisfaction}星`,
+        得分: fu.satisfaction * 20,
+        回访人: fu.operatorName,
+        回访日期: fu.followUpDate,
+      }
+    })
+
+    return {
+      summary,
+      tables: [
+        { title: '客户画像数据', data: customerProfileData },
+        { title: '满意度数据', data: satisfactionData },
+      ],
+    }
+  }, [mainReport])
+
+  const getReportData = useCallback((category: ReportCategory) => {
+    switch (category) {
+      case 'business':
+        return getBusinessReportData()
+      case 'quality':
+        return getQualityReportData()
+      case 'drug':
+        return getDrugReportData()
+      case 'performance':
+        return getPerformanceReportData()
+      case 'customer':
+        return getCustomerReportData()
+      default:
+        return { summary: [], tables: [] }
+    }
+  }, [getBusinessReportData, getQualityReportData, getDrugReportData, getPerformanceReportData, getCustomerReportData])
+
+  const handleExport = useCallback(async (type: 'excel' | 'pdf') => {
     const categoryName = categoryList.find((c) => c.id === activeCategory)?.name || '报表'
-    const newExport: ExportHistory = {
-      id: Date.now().toString(),
-      name: `${dateRange}${categoryName}`,
+    const reportName = `${dateRange}${categoryName}`
+    
+    const historyId = addExportHistory({
+      name: reportName,
       type,
       category: categoryName,
-      time: new Date().toLocaleString('zh-CN'),
       status: 'processing',
+    })
+
+    try {
+      const reportData = getReportData(activeCategory)
+      const result = await exportReport({
+        type,
+        name: reportName,
+        category: categoryName,
+        data: reportData,
+      })
+
+      downloadFile(result.blob, result.fileName)
+      
+      updateExportHistory(historyId, {
+        status: 'success',
+        size: formatFileSize(result.fileSize),
+        fileSize: result.fileSize,
+      })
+    } catch (error) {
+      updateExportHistory(historyId, {
+        status: 'failed',
+      })
     }
-    setExportHistory([newExport, ...exportHistory])
-    setTimeout(() => {
-      setExportHistory((prev) =>
-        prev.map((e) =>
-          e.id === newExport.id ? { ...e, status: 'success', size: type === 'excel' ? `${Math.floor(Math.random() * 300 + 100)}KB` : `${(Math.random() * 2 + 0.5).toFixed(1)}MB` } : e
-        )
-      )
-    }, 2000)
-  }
+  }, [activeCategory, dateRange, addExportHistory, updateExportHistory, getReportData])
 
   return (
     <div className="space-y-6">

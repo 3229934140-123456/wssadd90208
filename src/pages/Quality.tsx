@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   Users,
   BarChart3,
@@ -19,6 +19,16 @@ import {
   Activity,
   ArrowLeft,
   X,
+  Plus,
+  Edit2,
+  UserX,
+  UserCheck,
+  Shield,
+  LayoutTemplate,
+  Pill,
+  ClipboardCheck,
+  Settings,
+  Check,
 } from 'lucide-react'
 import {
   BarChart,
@@ -33,8 +43,9 @@ import {
   Legend,
 } from 'recharts'
 import { StatCard, Badge, Tag, DataTable, Modal } from '../components/ui'
-import { doctors, customerRecords, stores, qualityScores, injectionPoints } from '../data/mockData'
-import type { Doctor, CustomerRecord, QualityScore } from '../types'
+import { doctors as mockDoctors, customerRecords, stores, qualityScores, injectionPoints } from '../data/mockData'
+import type { Doctor, CustomerRecord, QualityScore, Gender } from '../types'
+import { useAppStore, type DoctorAccount } from '../store'
 
 type TabType = 'overview' | 'doctors'
 
@@ -49,6 +60,71 @@ const statusMap: Record<string, { label: string; variant: 'success' | 'warning' 
   on_duty: { label: '在岗', variant: 'success' },
   off_duty: { label: '休息', variant: 'default' },
   leave: { label: '休假', variant: 'warning' },
+}
+
+const permissionModules = [
+  { key: 'dashboard', name: '经营看板', icon: BarChart3 },
+  { key: 'records', name: '诊疗记录', icon: FileText },
+  { key: 'record_entry', name: '记录录入', icon: FileText },
+  { key: 'record_view', name: '记录查看', icon: Eye },
+  { key: 'templates', name: '项目模板', icon: LayoutTemplate },
+  { key: 'template_view', name: '项目模板查看', icon: Eye },
+  { key: 'drugs', name: '药品管理', icon: Pill },
+  { key: 'drug_view', name: '药品查看', icon: Eye },
+  { key: 'quality', name: '质量控制', icon: ClipboardCheck },
+  { key: 'reports', name: '报表中心', icon: BarChart3 },
+  { key: 'settings', name: '系统设置', icon: Settings },
+  { key: 'permissions', name: '权限管理', icon: Shield },
+]
+
+const rolePermissions: Record<string, string[]> = {
+  chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings', 'permissions'],
+  associate_chief: ['dashboard', 'records', 'record_entry', 'record_view', 'templates', 'template_view', 'drugs', 'drug_view', 'quality', 'reports', 'settings'],
+  attending: ['record_view', 'template_view', 'drug_view'],
+  resident: ['record_entry'],
+}
+
+interface DoctorFormData {
+  name: string
+  gender: Gender
+  phone: string
+  idCardNo: string
+  licenseNo: string
+  title: 'chief' | 'associate_chief' | 'attending' | 'resident'
+  storeId: string
+  specialty: string[]
+  yearsOfExperience: number
+  username: string
+  password: string
+  role: string
+  permissions: string[]
+  status: 'on_duty' | 'off_duty' | 'leave'
+}
+
+const specialtyOptions = [
+  '注射美容',
+  '面部年轻化',
+  '玻尿酸填充',
+  '瘦脸针',
+  '除皱针',
+  '面部轮廓塑形',
+  '水光针',
+  '中胚层疗法',
+  '皮肤修复',
+  '埋线提升',
+  '颈部年轻化',
+  '唇部美化',
+  '眼周抗衰',
+  '皮肤管理',
+  '基础注射',
+]
+
+function validatePhone(phone: string): boolean {
+  return /^1[3-9]\d{9}$/.test(phone)
+}
+
+function validateIdCard(idCard: string): boolean {
+  return /^[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/.test(idCard)
 }
 
 function getDoctorRecords(doctorId: string) {
@@ -82,14 +158,31 @@ export default function Quality() {
   const [filterTitle, setFilterTitle] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
 
+  const [showDoctorModal, setShowDoctorModal] = useState(false)
+  const [editingDoctor, setEditingDoctor] = useState<DoctorAccount | null>(null)
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [toggleDoctorId, setToggleDoctorId] = useState<string | null>(null)
+
+  const { doctors: storeDoctors, addDoctor, updateDoctor, toggleDoctorStatus } = useAppStore()
+
+  const allDoctors = useMemo(() => {
+    const merged: (Doctor | DoctorAccount)[] = [...storeDoctors]
+    mockDoctors.forEach((md) => {
+      if (!merged.find((d) => d.id === md.id)) {
+        merged.push(md)
+      }
+    })
+    return merged
+  }, [storeDoctors])
+
   const filteredDoctors = useMemo(() => {
-    return doctors.filter((d) => {
+    return allDoctors.filter((d) => {
       if (filterStore && d.storeId !== filterStore) return false
       if (filterTitle && d.title !== filterTitle) return false
       if (filterStatus && d.status !== filterStatus) return false
       return true
     })
-  }, [filterStore, filterTitle, filterStatus])
+  }, [allDoctors, filterStore, filterTitle, filterStatus])
 
   const overviewData = useMemo(() => {
     const allScores = qualityScores
@@ -121,7 +214,7 @@ export default function Quality() {
       .sort((a, b) => new Date(b.identifiedAt).getTime() - new Date(a.identifiedAt).getTime())
       .slice(0, 8)
 
-    const followUpStats = doctors.map((doc) => {
+    const followUpStats = allDoctors.map((doc) => {
       const records = getDoctorRecords(doc.id)
       const expectedFollowUps = records.length
       const actualFollowUps = records.filter((r) => r.followUps && r.followUps.length > 0).length
@@ -137,7 +230,7 @@ export default function Quality() {
     })
 
     return { avgScore, excellentRate, passRate, pendingCount, scoreDistribution, storeRankings, allRiskPoints, followUpStats }
-  }, [])
+  }, [allDoctors, getDoctorRecords])
 
   return (
     <div className="space-y-6">
@@ -185,6 +278,28 @@ export default function Quality() {
               filterStatus={filterStatus}
               setFilterStatus={setFilterStatus}
               onViewDetail={setSelectedDoctor}
+              onNewDoctor={() => {
+                setEditingDoctor(null)
+                setShowDoctorModal(true)
+              }}
+              onEditDoctor={(doctor) => {
+                if ('username' in doctor) {
+                  setEditingDoctor(doctor as DoctorAccount)
+                } else {
+                  setEditingDoctor({
+                    ...doctor,
+                    username: '',
+                    password: '',
+                    role: doctor.title,
+                    permissions: rolePermissions[doctor.title] || [],
+                  } as DoctorAccount)
+                }
+                setShowDoctorModal(true)
+              }}
+              onToggleStatus={(doctorId) => {
+                setToggleDoctorId(doctorId)
+                setShowConfirmModal(true)
+              }}
             />
           )}
         </>
@@ -197,6 +312,79 @@ export default function Quality() {
         width={720}
       >
         {selectedRecord && <InjectionPointViewer record={selectedRecord} />}
+      </Modal>
+
+      <DoctorFormModal
+        open={showDoctorModal}
+        editingDoctor={editingDoctor}
+        onClose={() => {
+          setShowDoctorModal(false)
+          setEditingDoctor(null)
+        }}
+        onSave={(data) => {
+          if (editingDoctor) {
+            updateDoctor(editingDoctor.id, data)
+          } else {
+            addDoctor(data)
+          }
+          setShowDoctorModal(false)
+          setEditingDoctor(null)
+        }}
+      />
+
+      <Modal
+        open={showConfirmModal}
+        onClose={() => {
+          setShowConfirmModal(false)
+          setToggleDoctorId(null)
+        }}
+        title="确认操作"
+        width={400}
+        footer={
+          <>
+            <button
+              onClick={() => {
+                setShowConfirmModal(false)
+                setToggleDoctorId(null)
+              }}
+              className="btn-secondary"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => {
+                if (toggleDoctorId) {
+                  toggleDoctorStatus(toggleDoctorId)
+                }
+                setShowConfirmModal(false)
+                setToggleDoctorId(null)
+              }}
+              className="btn-primary"
+            >
+              确认
+            </button>
+          </>
+        }
+      >
+        <div className="py-4">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
+              <AlertTriangle className="w-6 h-6 text-amber-500" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-700">
+                {toggleDoctorId && allDoctors.find((d) => d.id === toggleDoctorId)?.status === 'on_duty'
+                  ? '确定要停用该医生账号吗？'
+                  : '确定要启用该医生账号吗？'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {toggleDoctorId && allDoctors.find((d) => d.id === toggleDoctorId)?.status === 'on_duty'
+                  ? '停用后该医生将无法登录系统'
+                  : '启用后该医生将恢复登录权限'}
+              </p>
+            </div>
+          </div>
+        </div>
       </Modal>
     </div>
   )
@@ -332,7 +520,7 @@ function OverviewTab({ data }: { data: ReturnType<typeof useMemo<any>> }) {
 }
 
 interface DoctorsTabProps {
-  doctors: Doctor[]
+  doctors: (Doctor | DoctorAccount)[]
   filterStore: string
   setFilterStore: (v: string) => void
   filterTitle: string
@@ -340,6 +528,9 @@ interface DoctorsTabProps {
   filterStatus: string
   setFilterStatus: (v: string) => void
   onViewDetail: (d: Doctor) => void
+  onNewDoctor: () => void
+  onEditDoctor: (d: Doctor | DoctorAccount) => void
+  onToggleStatus: (doctorId: string) => void
 }
 
 function DoctorsTab({
@@ -351,14 +542,25 @@ function DoctorsTab({
   filterStatus,
   setFilterStatus,
   onViewDetail,
+  onNewDoctor,
+  onEditDoctor,
+  onToggleStatus,
 }: DoctorsTabProps) {
+  const [searchText, setSearchText] = useState('')
+
+  const filteredDoctors = useMemo(() => {
+    if (!searchText.trim()) return doctors
+    const kw = searchText.toLowerCase()
+    return doctors.filter((d) => d.name.toLowerCase().includes(kw))
+  }, [doctors, searchText])
+
   const columns = [
     {
       key: 'name',
       title: '医生',
       dataIndex: 'name' as const,
       width: 200,
-      render: (_: any, record: Doctor) => (
+      render: (_: any, record: Doctor | DoctorAccount) => (
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-medical-500 to-primary-500 flex items-center justify-center text-white font-semibold text-sm">
             {record.name.charAt(0)}
@@ -436,14 +638,44 @@ function DoctorsTab({
       title: '操作',
       dataIndex: 'id' as const,
       align: 'center' as const,
-      render: (_: any, record: Doctor) => (
-        <button
-          onClick={() => onViewDetail(record)}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-medical-600 hover:bg-medical-50 rounded-lg transition-colors"
-        >
-          <Eye className="w-4 h-4" />
-          详情
-        </button>
+      width: 240,
+      render: (_: any, record: Doctor | DoctorAccount) => (
+        <div className="flex items-center justify-center gap-1">
+          <button
+            onClick={() => onViewDetail(record)}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-medical-600 hover:bg-medical-50 rounded-lg transition-colors"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            详情
+          </button>
+          <button
+            onClick={() => onEditDoctor(record)}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+          >
+            <Edit2 className="w-3.5 h-3.5" />
+            编辑
+          </button>
+          <button
+            onClick={() => onToggleStatus(record.id)}
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg transition-colors ${
+              record.status === 'on_duty'
+                ? 'text-red-600 hover:bg-red-50'
+                : 'text-emerald-600 hover:bg-emerald-50'
+            }`}
+          >
+            {record.status === 'on_duty' ? (
+              <>
+                <UserX className="w-3.5 h-3.5" />
+                停用
+              </>
+            ) : (
+              <>
+                <UserCheck className="w-3.5 h-3.5" />
+                启用
+              </>
+            )}
+          </button>
+        </div>
       ),
     },
   ]
@@ -459,7 +691,7 @@ function DoctorsTab({
           <select
             value={filterStore}
             onChange={(e) => setFilterStore(e.target.value)}
-            className="input w-40"
+            className="input w-40 py-1.5 text-xs"
           >
             <option value="">全部门店</option>
             {stores.filter((s) => s.status === 'active').map((s) => (
@@ -469,7 +701,7 @@ function DoctorsTab({
           <select
             value={filterTitle}
             onChange={(e) => setFilterTitle(e.target.value)}
-            className="input w-36"
+            className="input w-36 py-1.5 text-xs"
           >
             <option value="">全部职称</option>
             <option value="chief">主任医师</option>
@@ -480,7 +712,7 @@ function DoctorsTab({
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
-            className="input w-32"
+            className="input w-32 py-1.5 text-xs"
           >
             <option value="">全部状态</option>
             <option value="on_duty">在岗</option>
@@ -490,14 +722,26 @@ function DoctorsTab({
           <div className="flex-1" />
           <div className="relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input placeholder="搜索医生姓名" className="input pl-9 w-48" />
+            <input
+              placeholder="搜索医生姓名"
+              className="input pl-9 w-48 py-1.5 text-xs"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
           </div>
+          <button
+            onClick={onNewDoctor}
+            className="btn-primary flex items-center gap-1.5 py-1.5 text-xs"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            新建医生账号
+          </button>
         </div>
       </div>
 
       <DataTable
         columns={columns as any}
-        dataSource={doctors as any[]}
+        dataSource={filteredDoctors as any[]}
         rowKey="id"
         pageSize={8}
       />
@@ -853,5 +1097,441 @@ function InjectionPointViewer({ record }: { record: CustomerRecord }) {
         </div>
       )}
     </div>
+  )
+}
+
+interface DoctorFormModalProps {
+  open: boolean
+  editingDoctor: DoctorAccount | null
+  onClose: () => void
+  onSave: (data: Omit<DoctorAccount, 'id' | 'createdAt'>) => void
+}
+
+function DoctorFormModal({ open, editingDoctor, onClose, onSave }: DoctorFormModalProps) {
+  const [formData, setFormData] = useState<DoctorFormData>({
+    name: '',
+    gender: 'female',
+    phone: '',
+    idCardNo: '',
+    licenseNo: '',
+    title: 'attending',
+    storeId: '',
+    specialty: [],
+    yearsOfExperience: 0,
+    username: '',
+    password: '',
+    role: 'attending',
+    permissions: rolePermissions['attending'] || [],
+    status: 'on_duty',
+  })
+
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (editingDoctor && open) {
+      setFormData({
+        name: editingDoctor.name,
+        gender: editingDoctor.gender,
+        phone: editingDoctor.phone,
+        idCardNo: editingDoctor.idCardNo,
+        licenseNo: editingDoctor.licenseNo,
+        title: editingDoctor.title,
+        storeId: editingDoctor.storeId,
+        specialty: editingDoctor.specialty,
+        yearsOfExperience: editingDoctor.yearsOfExperience,
+        username: editingDoctor.username,
+        password: '',
+        role: editingDoctor.role,
+        permissions: editingDoctor.permissions,
+        status: editingDoctor.status,
+      })
+    } else if (open) {
+      setFormData({
+        name: '',
+        gender: 'female',
+        phone: '',
+        idCardNo: '',
+        licenseNo: '',
+        title: 'attending',
+        storeId: '',
+        specialty: [],
+        yearsOfExperience: 0,
+        username: '',
+        password: '',
+        role: 'attending',
+        permissions: rolePermissions['attending'] || [],
+        status: 'on_duty',
+      })
+    }
+    setErrors({})
+  }, [editingDoctor, open])
+
+  const handleChange = <K extends keyof DoctorFormData>(key: K, value: DoctorFormData[K]) => {
+    setFormData((prev) => ({ ...prev, [key]: value }))
+    if (errors[key]) {
+      setErrors((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+    }
+
+    if (key === 'title' && typeof value === 'string') {
+      const defaultPerms = rolePermissions[value] || []
+      setFormData((prev) => ({
+        ...prev,
+        title: value as DoctorFormData['title'],
+        role: value,
+        permissions: defaultPerms,
+      }))
+    }
+  }
+
+  const toggleSpecialty = (specialty: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      specialty: prev.specialty.includes(specialty)
+        ? prev.specialty.filter((s) => s !== specialty)
+        : [...prev.specialty, specialty],
+    }))
+  }
+
+  const togglePermission = (permKey: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      permissions: prev.permissions.includes(permKey)
+        ? prev.permissions.filter((p) => p !== permKey)
+        : [...prev.permissions, permKey],
+    }))
+  }
+
+  const validate = (): boolean => {
+    const newErrors: Record<string, string> = {}
+
+    if (!formData.name.trim()) newErrors.name = '请输入姓名'
+    if (!formData.phone.trim()) {
+      newErrors.phone = '请输入手机号'
+    } else if (!validatePhone(formData.phone)) {
+      newErrors.phone = '请输入正确的手机号'
+    }
+    if (!formData.idCardNo.trim()) {
+      newErrors.idCardNo = '请输入身份证号'
+    } else if (!validateIdCard(formData.idCardNo)) {
+      newErrors.idCardNo = '请输入正确的身份证号'
+    }
+    if (!formData.licenseNo.trim()) newErrors.licenseNo = '请输入执业证号'
+    if (!formData.storeId) newErrors.storeId = '请选择所属门店'
+    if (formData.specialty.length === 0) newErrors.specialty = '请至少选择一个专长领域'
+    if (!formData.username.trim()) newErrors.username = '请输入账号用户名'
+    if (!editingDoctor && !formData.password.trim()) newErrors.password = '请输入密码'
+    if (formData.yearsOfExperience < 0) newErrors.yearsOfExperience = '从业年限不能为负数'
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = () => {
+    if (!validate()) return
+
+    const selectedStore = stores.find((s) => s.id === formData.storeId)
+
+    const saveData: Omit<DoctorAccount, 'id' | 'createdAt'> = {
+      name: formData.name,
+      gender: formData.gender,
+      age: new Date().getFullYear() - parseInt(formData.idCardNo.slice(6, 10)),
+      phone: formData.phone,
+      idCardNo: formData.idCardNo,
+      licenseNo: formData.licenseNo,
+      title: formData.title,
+      specialty: formData.specialty,
+      yearsOfExperience: formData.yearsOfExperience,
+      storeId: formData.storeId,
+      storeName: selectedStore?.shortName,
+      status: formData.status,
+      joinDate: new Date().toISOString().slice(0, 10),
+      username: formData.username,
+      password: formData.password,
+      role: formData.role,
+      permissions: formData.permissions,
+    }
+
+    if (editingDoctor) {
+      saveData.joinDate = editingDoctor.joinDate
+    }
+
+    onSave(saveData)
+  }
+
+  if (!open) return null
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={editingDoctor ? '编辑医生账号' : '新建医生账号'}
+      width={800}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-secondary">
+            取消
+          </button>
+          <button onClick={handleSubmit} className="btn-primary">
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-5 max-h-[70vh] overflow-y-auto pr-2">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              姓名 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              className={`input w-full ${errors.name ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.name}
+              onChange={(e) => handleChange('name', e.target.value)}
+              placeholder="请输入姓名"
+            />
+            {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              性别 <span className="text-red-500">*</span>
+            </label>
+            <div className="flex items-center gap-4 pt-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  checked={formData.gender === 'female'}
+                  onChange={() => handleChange('gender', 'female')}
+                  className="w-4 h-4 text-medical-600"
+                />
+                <span className="text-sm text-slate-600">女</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  checked={formData.gender === 'male'}
+                  onChange={() => handleChange('gender', 'male')}
+                  className="w-4 h-4 text-medical-600"
+                />
+                <span className="text-sm text-slate-600">男</span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              手机号 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="tel"
+              className={`input w-full ${errors.phone ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.phone}
+              onChange={(e) => handleChange('phone', e.target.value)}
+              placeholder="请输入手机号"
+            />
+            {errors.phone && <p className="text-xs text-red-500 mt-1">{errors.phone}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              身份证号 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              className={`input w-full ${errors.idCardNo ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.idCardNo}
+              onChange={(e) => handleChange('idCardNo', e.target.value)}
+              placeholder="请输入身份证号"
+            />
+            {errors.idCardNo && <p className="text-xs text-red-500 mt-1">{errors.idCardNo}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              执业证号 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              className={`input w-full ${errors.licenseNo ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.licenseNo}
+              onChange={(e) => handleChange('licenseNo', e.target.value)}
+              placeholder="请输入执业证号"
+            />
+            {errors.licenseNo && <p className="text-xs text-red-500 mt-1">{errors.licenseNo}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              职称 <span className="text-red-500">*</span>
+            </label>
+            <select
+              className="input w-full"
+              value={formData.title}
+              onChange={(e) => handleChange('title', e.target.value as any)}
+            >
+              <option value="chief">主任医师</option>
+              <option value="associate_chief">副主任医师</option>
+              <option value="attending">主治医师</option>
+              <option value="resident">住院医师</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              所属门店 <span className="text-red-500">*</span>
+            </label>
+            <select
+              className={`input w-full ${errors.storeId ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.storeId}
+              onChange={(e) => handleChange('storeId', e.target.value)}
+            >
+              <option value="">请选择门店</option>
+              {stores.filter((s) => s.status === 'active').map((s) => (
+                <option key={s.id} value={s.id}>{s.shortName}</option>
+              ))}
+            </select>
+            {errors.storeId && <p className="text-xs text-red-500 mt-1">{errors.storeId}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              从业年限 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="number"
+              className={`input w-full ${errors.yearsOfExperience ? 'border-red-300 focus:border-red-500' : ''}`}
+              value={formData.yearsOfExperience}
+              onChange={(e) => handleChange('yearsOfExperience', Number(e.target.value))}
+              min="0"
+            />
+            {errors.yearsOfExperience && <p className="text-xs text-red-500 mt-1">{errors.yearsOfExperience}</p>}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              状态 <span className="text-red-500">*</span>
+            </label>
+            <select
+              className="input w-full"
+              value={formData.status}
+              onChange={(e) => handleChange('status', e.target.value as any)}
+            >
+              <option value="on_duty">在岗</option>
+              <option value="off_duty">休息</option>
+              <option value="leave">休假</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            专长领域（多选） <span className="text-red-500">*</span>
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {specialtyOptions.map((s) => (
+              <label
+                key={s}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border cursor-pointer transition-colors ${
+                  formData.specialty.includes(s)
+                    ? 'bg-medical-50 border-medical-300 text-medical-700'
+                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={formData.specialty.includes(s)}
+                  onChange={() => toggleSpecialty(s)}
+                  className="sr-only"
+                />
+                <Check className={`w-3.5 h-3.5 ${formData.specialty.includes(s) ? 'opacity-100' : 'opacity-0'}`} />
+                <span className="text-xs font-medium">{s}</span>
+              </label>
+            ))}
+          </div>
+          {errors.specialty && <p className="text-xs text-red-500 mt-1">{errors.specialty}</p>}
+        </div>
+
+        <div className="border-t border-slate-200 pt-4">
+          <h4 className="text-sm font-semibold text-slate-700 mb-3">账号信息</h4>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                账号用户名 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                className={`input w-full ${errors.username ? 'border-red-300 focus:border-red-500' : ''}`}
+                value={formData.username}
+                onChange={(e) => handleChange('username', e.target.value)}
+                placeholder="请输入账号用户名"
+              />
+              {errors.username && <p className="text-xs text-red-500 mt-1">{errors.username}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                密码 {!editingDoctor && <span className="text-red-500">*</span>}
+              </label>
+              <input
+                type="password"
+                className={`input w-full ${errors.password ? 'border-red-300 focus:border-red-500' : ''}`}
+                value={formData.password}
+                onChange={(e) => handleChange('password', e.target.value)}
+                placeholder={editingDoctor ? "不修改请留空" : "请输入密码"}
+              />
+              {errors.password && <p className="text-xs text-red-500 mt-1">{errors.password}</p>}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-slate-200 pt-4">
+          <h4 className="text-sm font-semibold text-slate-700 mb-3">角色与权限配置</h4>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              角色 <span className="text-red-500">*</span>
+            </label>
+            <select
+              className="input w-full"
+              value={formData.role}
+              onChange={(e) => handleChange('role', e.target.value)}
+            >
+              <option value="chief">主任医师</option>
+              <option value="associate_chief">副主任医师</option>
+              <option value="attending">主治医师</option>
+              <option value="resident">住院医师</option>
+            </select>
+            <p className="text-xs text-slate-400 mt-1">选择角色后将自动关联默认权限配置</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">权限配置（多选）</label>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {permissionModules.map((mod) => {
+                const Icon = mod.icon
+                return (
+                  <label
+                    key={mod.key}
+                    className={`flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      formData.permissions.includes(mod.key)
+                        ? 'bg-medical-50 border-medical-300'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={formData.permissions.includes(mod.key)}
+                      onChange={() => togglePermission(mod.key)}
+                      className="w-4 h-4 text-medical-600 rounded"
+                    />
+                    <Icon className={`w-4 h-4 ${
+                      formData.permissions.includes(mod.key) ? 'text-medical-600' : 'text-slate-400'
+                    }`} />
+                    <span className={`text-xs font-medium ${
+                      formData.permissions.includes(mod.key) ? 'text-medical-700' : 'text-slate-600'
+                    }`}>{mod.name}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Modal>
   )
 }

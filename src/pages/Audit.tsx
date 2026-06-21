@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Search,
   Filter,
@@ -16,16 +16,26 @@ import {
   ShieldAlert,
   FileCheck,
   ChevronDown,
+  HelpCircle,
+  X,
 } from 'lucide-react';
 import { Badge, DataTable, Modal, Progress } from '../components/ui';
-import { customerRecords, stores, doctors, projectTemplates, injectionPoints } from '../data/mockData';
-import type { CustomerRecord, RecordStatus } from '../types';
+import { stores, doctors, projectTemplates, injectionPoints, customerRecords as mockCustomerRecords } from '../data/mockData';
+import { useAppStore } from '../store';
+import { runAuditRules } from '../utils/auditRules';
+import type { CustomerRecord, RecordStatus, RuleViolation, QualityScore } from '../types';
 
 const statusMap: Record<RecordStatus, { label: string; variant: 'success' | 'warning' | 'danger' | 'info' | 'default'; color: string }> = {
   pending: { label: '待复核', variant: 'warning', color: 'text-amber-600 bg-amber-50' },
   reviewing: { label: '审核中', variant: 'info', color: 'text-medical-600 bg-medical-50' },
   confirmed: { label: '已确认', variant: 'success', color: 'text-emerald-600 bg-emerald-50' },
   rejected: { label: '已驳回', variant: 'danger', color: 'text-red-600 bg-red-50' },
+};
+
+const severityMap = {
+  high: { label: '高', color: 'text-red-600 bg-red-50', border: 'border-red-200', dotColor: 'bg-red-500' },
+  medium: { label: '中', color: 'text-amber-600 bg-amber-50', border: 'border-amber-200', dotColor: 'bg-amber-500' },
+  low: { label: '低', color: 'text-emerald-600 bg-emerald-50', border: 'border-emerald-200', dotColor: 'bg-emerald-500' },
 };
 
 const riskLevelMap = {
@@ -38,6 +48,36 @@ const riskLevelMap = {
 function formatDateTime(iso: string) {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function getOverallRating(totalScore: number, maxScore: number): QualityScore['overallRating'] {
+  const percentage = (totalScore / maxScore) * 100;
+  if (percentage >= 90) return 'excellent';
+  if (percentage >= 80) return 'good';
+  if (percentage >= 70) return 'fair';
+  return 'poor';
+}
+
+function getRatingLabel(rating: QualityScore['overallRating']): string {
+  const labels = {
+    excellent: '优秀',
+    good: '良好',
+    fair: '一般',
+    poor: '较差',
+  };
+  return labels[rating];
+}
+
+function getReviewRemark(totalScore: number, maxScore: number, violations: RuleViolation[]): string {
+  const percentage = (totalScore / maxScore) * 100;
+  if (violations.length > 0) {
+    const violationNames = violations.slice(0, 3).map(v => v.ruleName).join('、');
+    return `存在违规项：${violationNames}${violations.length > 3 ? '等' : ''}，需关注整改。`;
+  }
+  if (percentage >= 90) return '操作规范，记录完整，质量优秀。';
+  if (percentage >= 80) return '整体良好，细节可进一步优化。';
+  if (percentage >= 70) return '存在部分不规范，需改进。';
+  return '存在较多问题，需重点整改。';
 }
 
 function FaceInjectionMap({ record }: { record: CustomerRecord }) {
@@ -110,13 +150,16 @@ function QualityScorePanel({
   record,
   scores,
   onScoreChange,
+  readOnly,
 }: {
   record: CustomerRecord;
   scores: { category: string; score: number; fullScore: number; remark?: string }[];
   onScoreChange: (idx: number, score: number) => void;
+  readOnly?: boolean;
 }) {
   const totalScore = scores.reduce((s, c) => s + c.score, 0);
   const maxScore = scores.reduce((s, c) => s + c.fullScore, 0);
+  const rating = getOverallRating(totalScore, maxScore);
 
   return (
     <div className="space-y-4">
@@ -128,6 +171,9 @@ function QualityScorePanel({
         <div className="text-right">
           <span className="text-2xl font-bold text-medical-600">{totalScore}</span>
           <span className="text-slate-400 text-sm"> / {maxScore}</span>
+          <Badge variant={rating === 'excellent' ? 'success' : rating === 'good' ? 'info' : rating === 'fair' ? 'warning' : 'danger'} className="ml-2">
+            {getRatingLabel(rating)}
+          </Badge>
         </div>
       </div>
       <div className="space-y-3">
@@ -142,7 +188,8 @@ function QualityScorePanel({
                   max={s.fullScore}
                   value={s.score}
                   onChange={(e) => onScoreChange(idx, Math.min(s.fullScore, Math.max(0, Number(e.target.value))))}
-                  className="w-16 px-2 py-1 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-medical-500"
+                  disabled={readOnly}
+                  className={`w-16 px-2 py-1 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-medical-500 ${readOnly ? 'bg-slate-100 cursor-not-allowed' : ''}`}
                 />
                 <span className="text-xs text-slate-400">/ {s.fullScore}</span>
               </div>
@@ -151,16 +198,114 @@ function QualityScorePanel({
           </div>
         ))}
       </div>
-      <div>
-        <label className="text-sm text-slate-700 mb-1 block">审核评语</label>
-        <textarea
-          defaultValue={record.reviewRemark || ''}
-          placeholder="请输入审核评语..."
-          rows={3}
-          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-medical-500 resize-none"
-        />
+    </div>
+  );
+}
+
+function RuleViolationPanel({ violations }: { violations: RuleViolation[] }) {
+  if (!violations || violations.length === 0) {
+    return (
+      <div className="p-4 bg-slate-50 rounded-xl">
+        <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-emerald-500" />
+          违规检测结果
+        </h4>
+        <div className="text-sm text-slate-400 text-center py-6">
+          <CheckCircle className="w-12 h-12 text-emerald-300 mx-auto mb-2" />
+          未检测到违规项
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 bg-slate-50 rounded-xl">
+      <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+        <ShieldAlert className="w-4 h-4 text-amber-500" />
+        违规检测结果
+        <Badge variant="warning" className="ml-2">{violations.length} 项违规</Badge>
+      </h4>
+      <div className="space-y-3">
+        {violations.map((v, idx) => {
+          const sm = severityMap[v.severity];
+          return (
+            <div key={idx} className={`p-3 rounded-lg border ${sm.color}`}>
+              <div className="flex items-start gap-2">
+                <span className={`w-2 h-2 rounded-full ${sm.dotColor} mt-1.5 flex-shrink-0`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-medium text-sm text-slate-800">{v.ruleName}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${sm.color} border ${sm.border}`}>
+                      {sm.label}风险
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 mb-1">{v.description}</p>
+                  {v.evidence && (
+                    <p className="text-xs text-slate-500 bg-white/50 px-2 py-1 rounded">
+                      <span className="font-medium">证据：</span>{v.evidence}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+function RulesHelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const rules = [
+    {
+      id: 'dosage_range',
+      name: '剂量超范围检测',
+      severity: 'high' as const,
+      description: '检查各注射点位的实际剂量是否在建议范围内。如果点位有项目模板定义的推荐剂量，则以推荐剂量的±30%为范围；否则以点位配置的最小/最大剂量为范围。',
+    },
+    {
+      id: 'left_right_balance',
+      name: '左右差异>30%检测',
+      severity: 'medium' as const,
+      description: '检查面部左右对称点位的注射剂量差异。如果差异超过30%，则判定为违规，提示可能存在注射不对称风险。',
+    },
+    {
+      id: 'pre_op_photos',
+      name: '缺术前照片检测',
+      severity: 'high' as const,
+      description: '检查是否上传了术前照片，且包含正位、侧位45°、侧位90°三个必要角度。缺少照片或角度不全将被判定为违规。',
+    },
+    {
+      id: 'batch_no_missing',
+      name: '缺药品批号检测',
+      severity: 'high' as const,
+      description: '检查所有使用药品是否都填写了生产批号。缺少批号将无法追溯药品来源，属于严重违规。',
+    },
+  ];
+
+  return (
+    <Modal open={open} onClose={onClose} title="审核规则说明" width={640}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-600">
+          系统将自动对所有记录执行以下规则检测，检测不通过的记录将标记为"待复核"状态。
+        </p>
+        {rules.map(rule => {
+          const sm = severityMap[rule.severity];
+          return (
+            <div key={rule.id} className={`p-4 rounded-lg border ${sm.color}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`w-2 h-2 rounded-full ${sm.dotColor}`} />
+                <span className="font-semibold text-slate-800">{rule.name}</span>
+                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${sm.color} border ${sm.border}`}>
+                  {sm.label}风险
+                </span>
+              </div>
+              <p className="text-sm text-slate-600">{rule.description}</p>
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
   );
 }
 
@@ -176,15 +321,37 @@ export default function Audit() {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [qualityScores, setQualityScores] = useState<{ category: string; score: number; fullScore: number; remark?: string }[]>([]);
   const [reviewRemark, setReviewRemark] = useState('');
+  const [rulesHelpOpen, setRulesHelpOpen] = useState(false);
+  const [modifySuggestion, setModifySuggestion] = useState('');
+  const [showModifyInput, setShowModifyInput] = useState(false);
+
+  const { records, setRecords, updateRecord, user } = useAppStore();
+
+  useEffect(() => {
+    if (records.length === 0) {
+      const processedRecords = mockCustomerRecords.map(record => {
+        const template = projectTemplates.find(t => t.id === record.projectId);
+        const auditResult = runAuditRules(record, template, injectionPoints);
+        
+        return {
+          ...record,
+          status: auditResult.needsReview ? 'pending' : record.status,
+          riskPoints: auditResult.riskPoints.length > 0 ? auditResult.riskPoints : record.riskPoints,
+          ruleViolations: auditResult.violations.length > 0 ? auditResult.violations : undefined,
+        } as CustomerRecord;
+      });
+      setRecords(processedRecords);
+    }
+  }, [records.length, setRecords]);
 
   const statusCounts = useMemo(() => {
-    const counts = { all: customerRecords.length, pending: 0, reviewing: 0, confirmed: 0, rejected: 0 };
-    customerRecords.forEach(r => { counts[r.status]++; });
+    const counts = { all: records.length, pending: 0, reviewing: 0, confirmed: 0, rejected: 0 };
+    records.forEach(r => { counts[r.status]++; });
     return counts;
-  }, []);
+  }, [records]);
 
   const filteredRecords = useMemo(() => {
-    return customerRecords.filter(r => {
+    return records.filter(r => {
       if (activeStatus !== 'all' && r.status !== activeStatus) return false;
       if (storeFilter && r.storeId !== storeFilter) return false;
       if (doctorFilter && r.doctorId !== doctorFilter) return false;
@@ -194,7 +361,7 @@ export default function Audit() {
       if (searchText && !r.customerName.includes(searchText) && !r.projectName.includes(searchText) && !r.recordNo.includes(searchText)) return false;
       return true;
     });
-  }, [activeStatus, storeFilter, doctorFilter, categoryFilter, dateFrom, dateTo, searchText]);
+  }, [records, activeStatus, storeFilter, doctorFilter, categoryFilter, dateFrom, dateTo, searchText]);
 
   const projectCategoryOptions = [
     { value: 'injection', label: '注射美容' },
@@ -205,19 +372,103 @@ export default function Audit() {
   ];
 
   const openDetailModal = (record: CustomerRecord) => {
-    setSelectedRecord(record);
+    const freshRecord = records.find(r => r.id === record.id) || record;
+    setSelectedRecord(freshRecord);
     setQualityScores([
-      { category: '记录完整度', score: record.qualityScore?.scores.find(s => s.category.includes('记录'))?.score ?? 25, fullScore: 30 },
-      { category: '拍照清晰度', score: record.qualityScore?.scores.find(s => s.category.includes('注射'))?.score ?? 15, fullScore: 20 },
-      { category: '术后交代', score: record.qualityScore?.scores.find(s => s.category.includes('术后'))?.score ?? 15, fullScore: 20 },
-      { category: '注射规范', score: record.qualityScore?.scores.find(s => s.category.includes('无菌'))?.score ?? 25, fullScore: 30 },
+      { category: '记录完整度', score: freshRecord.qualityScore?.scores.find(s => s.category.includes('记录') || s.category.includes('完整'))?.score ?? 25, fullScore: 30 },
+      { category: '拍照清晰度', score: freshRecord.qualityScore?.scores.find(s => s.category.includes('注射') || s.category.includes('拍照'))?.score ?? 15, fullScore: 20 },
+      { category: '术后交代', score: freshRecord.qualityScore?.scores.find(s => s.category.includes('术后') || s.category.includes('告知'))?.score ?? 15, fullScore: 20 },
+      { category: '注射规范', score: freshRecord.qualityScore?.scores.find(s => s.category.includes('无菌') || s.category.includes('规范'))?.score ?? 25, fullScore: 30 },
     ]);
-    setReviewRemark(record.reviewRemark || '');
+    setReviewRemark(freshRecord.reviewRemark || '');
+    setModifySuggestion('');
+    setShowModifyInput(false);
     setDetailModalOpen(true);
   };
 
   const handleScoreChange = (idx: number, score: number) => {
     setQualityScores(prev => prev.map((s, i) => i === idx ? { ...s, score } : s));
+  };
+
+  const handleConfirm = () => {
+    if (!selectedRecord) return;
+    
+    const totalScore = qualityScores.reduce((s, c) => s + c.score, 0);
+    const maxScore = qualityScores.reduce((s, c) => s + c.fullScore, 0);
+    const rating = getOverallRating(totalScore, maxScore);
+    const remark = reviewRemark || getReviewRemark(totalScore, maxScore, selectedRecord.ruleViolations || []);
+
+    const qualityScore: QualityScore = {
+      id: `qs_${selectedRecord.id}_${Date.now()}`,
+      recordId: selectedRecord.id,
+      inspectorId: user?.id || 'user_008',
+      inspectorName: user?.name || '质控张',
+      totalScore,
+      scores: qualityScores,
+      overallRating: rating,
+      remarks: remark,
+      evaluatedAt: new Date().toISOString(),
+    };
+
+    updateRecord(selectedRecord.id, {
+      status: 'confirmed',
+      qualityScore,
+      reviewRemark: remark,
+      reviewerId: user?.id || 'user_008',
+      reviewerName: user?.name || '质控张',
+      reviewedAt: new Date().toISOString(),
+    });
+
+    setDetailModalOpen(false);
+    setSelectedRecord(null);
+  };
+
+  const handleReject = () => {
+    if (!selectedRecord) return;
+    
+    const remark = reviewRemark || '存在违规项，予以驳回，请整改后重新提交。';
+
+    updateRecord(selectedRecord.id, {
+      status: 'rejected',
+      reviewRemark: remark,
+      reviewerId: user?.id || 'user_008',
+      reviewerName: user?.name || '质控张',
+      reviewedAt: new Date().toISOString(),
+    });
+
+    setDetailModalOpen(false);
+    setSelectedRecord(null);
+  };
+
+  const handleReturnModify = () => {
+    if (!selectedRecord) return;
+    
+    if (!showModifyInput) {
+      setShowModifyInput(true);
+      return;
+    }
+
+    const remark = modifySuggestion || '请完善相关信息后重新提交审核。';
+
+    updateRecord(selectedRecord.id, {
+      status: 'reviewing',
+      reviewRemark: remark,
+      reviewerId: user?.id || 'user_008',
+      reviewerName: user?.name || '质控张',
+      reviewedAt: new Date().toISOString(),
+    });
+
+    setDetailModalOpen(false);
+    setSelectedRecord(null);
+    setShowModifyInput(false);
+  };
+
+  const getHighestSeverity = (violations: RuleViolation[] | undefined) => {
+    if (!violations || violations.length === 0) return null;
+    const order = ['high', 'medium', 'low'] as const;
+    return violations.reduce((prev, curr) => 
+      order.indexOf(curr.severity) < order.indexOf(prev.severity) ? curr : prev
+    ).severity;
   };
 
   const columns = [
@@ -289,25 +540,38 @@ export default function Audit() {
     {
       key: 'risk',
       title: '风险标记',
-      dataIndex: 'riskPoints' as const,
-      render: (v: unknown) => {
-        const risks = v as CustomerRecord['riskPoints'];
-        if (!risks || risks.length === 0) {
+      dataIndex: 'ruleViolations' as const,
+      render: (_: unknown, record: CustomerRecord) => {
+        const violations = record.ruleViolations;
+        const risks = record.riskPoints;
+        
+        if ((!violations || violations.length === 0) && (!risks || risks.length === 0)) {
           return <span className="text-xs text-slate-400">无</span>;
         }
-        const highest = risks.reduce((prev, curr) => {
+
+        const count = (violations?.length || 0) + (risks?.length || 0);
+        const highestSeverity = getHighestSeverity(violations);
+        const highestRisk = risks?.reduce((prev, curr) => {
           const order = ['low', 'medium', 'high', 'critical'];
           return order.indexOf(curr.level) > order.indexOf(prev.level) ? curr : prev;
         });
-        const rm = riskLevelMap[highest.level as keyof typeof riskLevelMap];
+
+        let displayLevel = highestSeverity || highestRisk?.level || 'low';
+        if (highestRisk?.level === 'critical' || highestSeverity === 'high') {
+          displayLevel = 'high';
+        } else if (highestRisk?.level === 'high' || highestSeverity === 'medium') {
+          displayLevel = 'medium';
+        }
+
+        const rm = riskLevelMap[displayLevel as keyof typeof riskLevelMap];
         return (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${rm.color}`}>
             <ShieldAlert className="w-3 h-3" />
-            {rm.label}
+            {rm.label.replace('风险', '')} · {count}项
           </span>
         );
       },
-      width: 100,
+      width: 120,
     },
     {
       key: 'score',
@@ -338,7 +602,7 @@ export default function Audit() {
             <Eye className="w-3.5 h-3.5" />
             查看详情
           </button>
-          {record.status === 'pending' && (
+          {(record.status === 'pending' || record.status === 'reviewing') && (
             <button
               onClick={() => openDetailModal(record)}
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-medical-600 text-white hover:bg-medical-700 rounded-lg transition-colors"
@@ -352,6 +616,8 @@ export default function Audit() {
       width: 180,
     },
   ];
+
+  const isReadonly = selectedRecord?.status === 'confirmed' || selectedRecord?.status === 'rejected';
 
   return (
     <div className="p-6 space-y-6">
@@ -371,22 +637,32 @@ export default function Audit() {
             { key: 'confirmed' as const, label: '已确认' },
             { key: 'rejected' as const, label: '已驳回' },
           ].map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveStatus(tab.key)}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeStatus === tab.key
-                  ? 'bg-medical-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              {tab.label}
-              <span className={`px-1.5 py-0.5 rounded-full text-xs ${
-                activeStatus === tab.key ? 'bg-white/20' : 'bg-slate-100 text-slate-500'
-              }`}>
-                {statusCounts[tab.key]}
-              </span>
-            </button>
+            <div key={tab.key} className="flex items-center">
+              <button
+                onClick={() => setActiveStatus(tab.key)}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeStatus === tab.key
+                    ? 'bg-medical-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                {tab.label}
+                <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                  activeStatus === tab.key ? 'bg-white/20' : 'bg-slate-100 text-slate-500'
+                }`}>
+                  {statusCounts[tab.key]}
+                </span>
+              </button>
+              {tab.key === 'pending' && (
+                <button
+                  onClick={() => setRulesHelpOpen(true)}
+                  className="ml-1 p-1.5 text-slate-400 hover:text-medical-600 hover:bg-medical-50 rounded-full transition-colors"
+                  title="查看规则说明"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -473,18 +749,42 @@ export default function Audit() {
         title="审核详情"
         width={960}
         footer={
-          selectedRecord?.status === 'pending' || selectedRecord?.status === 'reviewing' ? (
-            <div className="flex items-center gap-2">
+          selectedRecord && (selectedRecord.status === 'pending' || selectedRecord.status === 'reviewing') ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              {showModifyInput && (
+                <div className="w-full flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={modifySuggestion}
+                    onChange={(e) => setModifySuggestion(e.target.value)}
+                    placeholder="请输入修改意见..."
+                    className="flex-1 input"
+                    autoFocus
+                  />
+                  <button onClick={() => setShowModifyInput(false)} className="p-2 text-slate-400 hover:text-slate-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
               <button onClick={() => setDetailModalOpen(false)} className="btn-secondary">取消</button>
-              <button className="inline-flex items-center gap-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm font-medium">
+              <button 
+                onClick={handleReturnModify} 
+                className="inline-flex items-center gap-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm font-medium"
+              >
                 <RotateCcw className="w-4 h-4" />
-                退回修改
+                {showModifyInput ? '确认退回' : '退回修改'}
               </button>
-              <button className="inline-flex items-center gap-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-medium">
+              <button 
+                onClick={handleReject} 
+                className="inline-flex items-center gap-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-medium"
+              >
                 <XCircle className="w-4 h-4" />
                 驳回
               </button>
-              <button className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors text-sm font-medium">
+              <button 
+                onClick={handleConfirm} 
+                className="inline-flex items-center gap-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors text-sm font-medium"
+              >
                 <CheckCircle className="w-4 h-4" />
                 确认通过
               </button>
@@ -496,6 +796,43 @@ export default function Audit() {
       >
         {selectedRecord && (
           <div className="space-y-6">
+            {isReadonly && selectedRecord.reviewedAt && (
+              <div className={`p-4 rounded-xl border ${selectedRecord.status === 'confirmed' ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+                <div className="flex items-center gap-2">
+                  {selectedRecord.status === 'confirmed' ? (
+                    <CheckCircle className="w-5 h-5 text-emerald-600" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-600" />
+                  )}
+                  <span className={`font-semibold ${selectedRecord.status === 'confirmed' ? 'text-emerald-800' : 'text-red-800'}`}>
+                    已{selectedRecord.status === 'confirmed' ? '确认通过' : '驳回'}
+                  </span>
+                  <span className="text-sm text-slate-500 ml-auto">
+                    审核人：{selectedRecord.reviewerName} · {formatDateTime(selectedRecord.reviewedAt)}
+                  </span>
+                </div>
+                {selectedRecord.reviewRemark && (
+                  <p className={`mt-2 text-sm ${selectedRecord.status === 'confirmed' ? 'text-emerald-700' : 'text-red-700'}`}>
+                    审核意见：{selectedRecord.reviewRemark}
+                  </p>
+                )}
+                {selectedRecord.qualityScore && (
+                  <div className="mt-2 flex items-center gap-4">
+                    <span className="text-sm text-slate-600">
+                      评分：<span className="font-semibold text-emerald-600">{selectedRecord.qualityScore.totalScore}</span> 分
+                    </span>
+                    <span className="text-sm text-slate-600">
+                      评级：<Badge variant={selectedRecord.qualityScore.overallRating === 'excellent' ? 'success' : selectedRecord.qualityScore.overallRating === 'good' ? 'info' : selectedRecord.qualityScore.overallRating === 'fair' ? 'warning' : 'danger'}>
+                        {getRatingLabel(selectedRecord.qualityScore.overallRating)}
+                      </Badge>
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <RuleViolationPanel violations={selectedRecord.ruleViolations || []} />
+
             <div className="grid grid-cols-3 gap-4">
               <div className="col-span-2 space-y-4">
                 <div className="p-4 bg-slate-50 rounded-xl">
@@ -582,7 +919,9 @@ export default function Audit() {
                             <td className="py-2.5 text-slate-700 font-medium">{d.drugName}</td>
                             <td className="py-2.5 text-slate-600">{d.drugBrand}</td>
                             <td className="py-2.5 text-slate-600">{d.specification}</td>
-                            <td className="py-2.5 text-slate-600 font-mono text-xs">{d.batchNo}</td>
+                            <td className={`py-2.5 font-mono text-xs ${!d.batchNo ? 'text-red-600 font-medium' : 'text-slate-600'}`}>
+                              {d.batchNo || <span className="text-red-500">缺失</span>}
+                            </td>
                             <td className="py-2.5 text-slate-700 text-right">{d.dosage}{d.unit}</td>
                             <td className="py-2.5 text-slate-700 text-right">¥{d.price.toLocaleString()}</td>
                           </tr>
@@ -599,9 +938,12 @@ export default function Audit() {
                   </h4>
                   <div className="grid grid-cols-4 gap-3">
                     {['术前正面', '术前侧面', '术后正面', '术后侧面'].map((label, idx) => (
-                      <div key={label} className="aspect-[3/4] bg-gradient-to-br from-slate-100 to-slate-200 rounded-lg flex flex-col items-center justify-center text-slate-400">
-                        <ImageIcon className="w-8 h-8 mb-1" />
-                        <span className="text-xs">{label}</span>
+                      <div key={label} className={`aspect-[3/4] rounded-lg flex flex-col items-center justify-center ${selectedRecord.beforePhotos && idx < 2 ? 'bg-slate-100' : idx >= 2 && selectedRecord.afterPhotos ? 'bg-slate-100' : 'bg-gradient-to-br from-red-50 to-red-100 border border-red-200'}`}>
+                        <ImageIcon className={`w-8 h-8 mb-1 ${selectedRecord.beforePhotos && idx < 2 ? 'text-slate-400' : idx >= 2 && selectedRecord.afterPhotos ? 'text-slate-400' : 'text-red-400'}`} />
+                        <span className={`text-xs ${selectedRecord.beforePhotos && idx < 2 ? 'text-slate-400' : idx >= 2 && selectedRecord.afterPhotos ? 'text-slate-400' : 'text-red-500'}`}>{label}</span>
+                        {(!selectedRecord.beforePhotos || selectedRecord.beforePhotos.length === 0) && idx < 2 && (
+                          <span className="text-xs text-red-500 mt-1">缺失</span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -640,13 +982,28 @@ export default function Audit() {
                     record={selectedRecord}
                     scores={qualityScores}
                     onScoreChange={handleScoreChange}
+                    readOnly={isReadonly}
                   />
+                  {!isReadonly && (
+                    <div className="mt-4">
+                      <label className="text-sm text-slate-700 mb-1 block">审核评语</label>
+                      <textarea
+                        value={reviewRemark}
+                        onChange={(e) => setReviewRemark(e.target.value)}
+                        placeholder="请输入审核评语..."
+                        rows={3}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-medical-500 resize-none"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </div>
         )}
       </Modal>
+
+      <RulesHelpModal open={rulesHelpOpen} onClose={() => setRulesHelpOpen(false)} />
     </div>
   );
 }
